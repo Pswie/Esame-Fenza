@@ -50,4 +50,4 @@ def get_movie_details(title, year):
 #     details = get_movie_details(m['Name'], m['Year'])
 #     print(f"Film: {m['Name']} - Poster: {details['poster_path'] if details else 'N/A'}")
 
-printe('ueue')
+printe('123456')
