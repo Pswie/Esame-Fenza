@@ -17,8 +17,10 @@ services:
     volumes:
       - ./backend:/app
       - ./Dati-prova-letterbox:/data
+      - ./Dati_film:/data/catalog
     environment:
       - MONGODB_URL=mongodb://mongodb:27017
+      - MOVIES_CSV_PATH=/data/catalog/movies_final.csv
     depends_on:
       - mongodb
 

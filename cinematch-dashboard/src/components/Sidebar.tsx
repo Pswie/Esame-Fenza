@@ -4,7 +4,7 @@ import './Sidebar.css';
 
 const menuItems = [
     { path: '/dashboard', icon: '📊', label: 'Dashboard', theme: 'netflix' },
-    { path: '/film-visti', icon: '🎞️', label: 'Film Visti', theme: 'fox' },
+    { path: '/catalogo', icon: '🎬', label: 'Catalogo Film', theme: 'fox' },
     { path: '/recommendations', icon: '🎬', label: 'Raccomandazioni', theme: 'a24' },
     { path: '/cinema', icon: '🎭', label: 'Cinema', theme: 'warner' },
     { path: '/sentiment', icon: '💬', label: 'Sentiment', theme: 'paramount' },

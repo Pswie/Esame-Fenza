@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, BarChart, Bar } from 'recharts';
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, BarChart, Bar, ScatterChart, Scatter, ZAxis, Legend, ReferenceLine } from 'recharts';
 import { StatsCard } from '../components/StatsCard';
 import './Dashboard.css';
 
@@ -10,6 +10,14 @@ interface DashboardData {
     monthly_data: any[];
     genre_data: any[];
     top_years?: { year: number; count: number }[];
+    // Nuove statistiche
+    rating_chart_data?: { rating: string; count: number; stars: number }[];
+    watch_time_hours?: number;
+    watch_time_minutes?: number;
+    avg_duration?: number;
+    top_directors?: { name: string; count: number; avg_rating: number }[];
+    top_actors?: { name: string; count: number }[];
+    rating_vs_imdb?: { title: string; user_rating: number; user_rating_10: number; imdb_rating: number; difference: number }[];
 }
 
 interface MonthlyStats {
@@ -27,6 +35,8 @@ export function Dashboard() {
     const [uploadMessage, setUploadMessage] = useState<string | null>(null);
     const [selectedYear, setSelectedYear] = useState<number>(new Date().getFullYear());
     const [monthlyStats, setMonthlyStats] = useState<MonthlyStats | null>(null);
+    const [activeRatingIndex, setActiveRatingIndex] = useState<number | null>(null);
+    const [activeYearIndex, setActiveYearIndex] = useState<number | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     const fetchStats = () => {
@@ -107,7 +117,6 @@ export function Dashboard() {
             if (response.ok) {
                 setUploadMessage(`✅ Caricati ${result.count} film con successo!`);
                 localStorage.setItem('has_data', 'true');
-                // Ricarica le statistiche
                 setTimeout(() => {
                     fetchStats();
                 }, 1000);
@@ -195,17 +204,24 @@ export function Dashboard() {
         favorite_genre: 'Nessuno',
         monthly_data: [],
         genre_data: [],
-        top_years: []
+        top_years: [],
+        rating_chart_data: [],
+        watch_time_hours: 0,
+        watch_time_minutes: 0,
+        avg_duration: 0,
+        top_directors: [],
+        top_actors: [],
+        rating_vs_imdb: []
     };
 
-    // Colori per le barre del grafico anni
+    // Colori per le barre
     const yearColors = ['#E50914', '#FF6B35', '#00529B', '#8B5CF6', '#06B6D4'];
+    const ratingColors = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#10b981'];
 
     // Anno corrente come limite massimo
     const currentYear = new Date().getFullYear();
-    const minYear = 2015; // Anno minimo
+    const minYear = 2015;
 
-    // Funzioni per navigare tra gli anni
     const goToPreviousYear = () => {
         if (selectedYear > minYear) {
             setSelectedYear(selectedYear - 1);
@@ -218,24 +234,40 @@ export function Dashboard() {
         }
     };
 
-    // Dati mensili per l'anno selezionato
     const monthlyDataForYear = monthlyStats?.monthly_data || displayData.monthly_data;
     const filmsInSelectedYear = monthlyStats?.total_films || 0;
+
+    // Formatta ore totali
+    const totalHours = displayData.watch_time_hours || 0;
+    const totalMinutes = displayData.watch_time_minutes || 0;
+    const watchTimeDisplay = totalHours > 0 ? `${totalHours}h ${totalMinutes}m` : `${displayData.total_watched * 2}h`;
+
+    // Rating distribution data (con fallback)
+    const ratingChartData = displayData.rating_chart_data || [
+        { rating: "⭐1", count: Math.round(displayData.total_watched * 0.05), stars: 1 },
+        { rating: "⭐2", count: Math.round(displayData.total_watched * 0.1), stars: 2 },
+        { rating: "⭐3", count: Math.round(displayData.total_watched * 0.25), stars: 3 },
+        { rating: "⭐4", count: Math.round(displayData.total_watched * 0.35), stars: 4 },
+        { rating: "⭐5", count: Math.round(displayData.total_watched * 0.25), stars: 5 },
+    ];
 
     return (
         <div className="dashboard-page">
             <div className="page-header">
                 <h1>Dashboard</h1>
-                <p>Panoramica del tuo storico cinematografico {data ? '(Dati Reali da MongoDB)' : '(In attesa di dati...)'}</p>
+                <p>Panoramica del tuo storico cinematografico</p>
             </div>
 
+            {/* ============================================
+                SEZIONE 1: STATS CARDS PRINCIPALI
+                ============================================ */}
             <div className="stats-row">
                 <StatsCard
                     icon="🎬"
                     label="Film Visti"
                     value={displayData.total_watched}
                     trend="up"
-                    trendValue={data ? "+12 questo mese" : "Carica un CSV"}
+                    trendValue={`${filmsInSelectedYear} nel ${selectedYear}`}
                 />
                 <StatsCard
                     icon="⭐"
@@ -247,37 +279,28 @@ export function Dashboard() {
                     icon="🎭"
                     label="Genere Preferito"
                     value={displayData.favorite_genre}
-                    subtitle="Basato sui tuoi voti"
+                    subtitle="Basato sui tuoi film"
                 />
                 <StatsCard
                     icon="⏱️"
-                    label="Ore Guardate"
-                    value={displayData.total_watched * 2}
-                    trend="up"
-                    trendValue="+28h questo mese"
+                    label="Tempo Totale"
+                    value={watchTimeDisplay}
+                    subtitle={`Media: ${displayData.avg_duration || 120} min/film`}
                 />
             </div>
 
+            {/* ============================================
+                SEZIONE 2: GRAFICI PRINCIPALI (esistenti)
+                ============================================ */}
             <div className="charts-section">
+                {/* Grafico Film per Mese */}
                 <div className="chart-container">
                     <div className="chart-header">
                         <h3>📈 Film Visti nel {selectedYear} <span className="year-count-badge">{filmsInSelectedYear} film</span></h3>
                         <div className="year-selector">
-                            <button
-                                className="year-nav-btn"
-                                onClick={goToPreviousYear}
-                                disabled={selectedYear <= minYear}
-                            >
-                                ◀
-                            </button>
+                            <button className="year-nav-btn" onClick={goToPreviousYear} disabled={selectedYear <= minYear}>◀</button>
                             <span className="year-display">{selectedYear}</span>
-                            <button
-                                className="year-nav-btn"
-                                onClick={goToNextYear}
-                                disabled={selectedYear >= currentYear}
-                            >
-                                ▶
-                            </button>
+                            <button className="year-nav-btn" onClick={goToNextYear} disabled={selectedYear >= currentYear}>▶</button>
                         </div>
                     </div>
                     <ResponsiveContainer width="100%" height={300}>
@@ -292,36 +315,16 @@ export function Dashboard() {
                             <XAxis dataKey="month" stroke="#757575" />
                             <YAxis stroke="#757575" />
                             <Tooltip
-                                contentStyle={{
-                                    background: '#1a1a1a',
-                                    border: '2px solid #E50914',
-                                    borderRadius: '8px',
-                                    padding: '12px 16px',
-                                    boxShadow: '0 4px 20px rgba(0,0,0,0.5)'
-                                }}
-                                itemStyle={{
-                                    color: '#ffffff',
-                                    fontSize: '14px',
-                                    fontWeight: '600'
-                                }}
-                                labelStyle={{
-                                    color: '#E50914',
-                                    fontSize: '14px',
-                                    fontWeight: '700',
-                                    marginBottom: '4px'
-                                }}
+                                contentStyle={{ background: '#1a1a1a', border: '2px solid #E50914', borderRadius: '8px' }}
+                                itemStyle={{ color: '#ffffff' }}
+                                labelStyle={{ color: '#E50914', fontWeight: '700' }}
                             />
-                            <Area
-                                type="monotone"
-                                dataKey="films"
-                                stroke="#E50914"
-                                fillOpacity={1}
-                                fill="url(#colorFilms)"
-                            />
+                            <Area type="monotone" dataKey="films" stroke="#E50914" fillOpacity={1} fill="url(#colorFilms)" />
                         </AreaChart>
                     </ResponsiveContainer>
                 </div>
 
+                {/* Grafico Distribuzione Generi */}
                 <div className="chart-container">
                     <h3>🎭 Distribuzione Generi</h3>
                     <ResponsiveContainer width="100%" height={300}>
@@ -335,31 +338,15 @@ export function Dashboard() {
                                 paddingAngle={5}
                                 dataKey="value"
                                 nameKey="name"
-                                label={false}
                             >
                                 {displayData.genre_data.map((entry: any, index: number) => (
                                     <Cell key={`cell-${index}`} fill={entry.color} />
                                 ))}
                             </Pie>
                             <Tooltip
-                                contentStyle={{
-                                    background: '#1a1a1a',
-                                    border: '2px solid #E50914',
-                                    borderRadius: '8px',
-                                    padding: '12px 16px',
-                                    boxShadow: '0 4px 20px rgba(0,0,0,0.5)'
-                                }}
-                                itemStyle={{
-                                    color: '#ffffff',
-                                    fontSize: '14px',
-                                    fontWeight: '600'
-                                }}
-                                labelStyle={{
-                                    color: '#E50914',
-                                    fontSize: '14px',
-                                    fontWeight: '700',
-                                    marginBottom: '4px'
-                                }}
+                                contentStyle={{ background: '#1a1a1a', border: '2px solid #E50914', borderRadius: '8px' }}
+                                itemStyle={{ color: '#ffffff' }}
+                                labelStyle={{ color: '#E50914', fontWeight: '700' }}
                                 formatter={(value: number, name: string) => [`${value}%`, name]}
                             />
                         </PieChart>
@@ -376,64 +363,226 @@ export function Dashboard() {
                 </div>
             </div>
 
-            <div className="chart-container top-years-chart">
-                <h3>🏆 Top 5 Anni Più Visti</h3>
-                <ResponsiveContainer width="100%" height={250}>
-                    <BarChart 
-                        data={displayData.top_years || []} 
-                        layout="vertical"
-                        margin={{ top: 5, right: 30, left: 60, bottom: 5 }}
-                    >
-                        <CartesianGrid strokeDasharray="3 3" stroke="#333" horizontal={false} />
-                        <XAxis type="number" stroke="#757575" />
-                        <YAxis 
-                            type="category" 
-                            dataKey="year" 
-                            stroke="#757575"
-                            tick={{ fill: '#ffffff', fontSize: 14, fontWeight: 600 }}
-                        />
-                        <Tooltip
-                            contentStyle={{
-                                background: '#1a1a1a',
-                                border: '2px solid #E50914',
-                                borderRadius: '8px',
-                                padding: '12px 16px',
-                                boxShadow: '0 4px 20px rgba(0,0,0,0.5)'
-                            }}
-                            itemStyle={{
-                                color: '#ffffff',
-                                fontSize: '14px',
-                                fontWeight: '600'
-                            }}
-                            labelStyle={{
-                                color: '#E50914',
-                                fontSize: '14px',
-                                fontWeight: '700',
-                                marginBottom: '4px'
-                            }}
-                            formatter={(value: number) => [`${value} film`, 'Visti']}
-                        />
-                        <Bar 
-                            dataKey="count" 
-                            radius={[0, 8, 8, 0]}
+            {/* ============================================
+                SEZIONE 3: DISTRIBUZIONE RATING + TOP ANNI
+                ============================================ */}
+            <div className="charts-section">
+                {/* Distribuzione Rating */}
+                <div className="chart-container">
+                    <h3>⭐ Come Voti i Film</h3>
+                    <ResponsiveContainer width="100%" height={250}>
+                        <BarChart 
+                            data={ratingChartData} 
+                            layout="vertical"
+                            onMouseLeave={() => setActiveRatingIndex(null)}
                         >
-                            {(displayData.top_years || []).map((_, index) => (
-                                <Cell key={`cell-${index}`} fill={yearColors[index % yearColors.length]} />
-                            ))}
-                        </Bar>
-                    </BarChart>
-                </ResponsiveContainer>
-                <div className="top-years-summary">
-                    {(displayData.top_years || []).slice(0, 3).map((item: any, index: number) => (
-                        <div key={item.year} className="year-badge">
-                            <span className="badge-position">#{index + 1}</span>
-                            <span className="badge-year">{item.year}</span>
-                            <span className="badge-count">{item.count} film</span>
-                        </div>
-                    ))}
+                            <CartesianGrid strokeDasharray="3 3" stroke="#333" horizontal={false} />
+                            <XAxis type="number" stroke="#757575" />
+                            <YAxis type="category" dataKey="rating" stroke="#757575" width={50} />
+                            <Tooltip
+                                contentStyle={{ background: '#1a1a1a', border: '2px solid #E50914', borderRadius: '8px' }}
+                                itemStyle={{ color: '#ffffff' }}
+                                labelStyle={{ color: '#E50914', fontWeight: '700' }}
+                                formatter={(value: number) => [`${value} film`, 'Totale']}
+                                cursor={{ fill: 'transparent' }}
+                            />
+                            <Bar 
+                                dataKey="count" 
+                                radius={[0, 8, 8, 0]}
+                                onMouseEnter={(_, index) => setActiveRatingIndex(index)}
+                            >
+                                {ratingChartData.map((_, index) => (
+                                    <Cell 
+                                        key={`cell-${index}`} 
+                                        fill={activeRatingIndex === null || activeRatingIndex === index 
+                                            ? ratingColors[index] 
+                                            : '#3a3a3a'} 
+                                        style={{ transition: 'fill 0.2s ease' }}
+                                    />
+                                ))}
+                            </Bar>
+                        </BarChart>
+                    </ResponsiveContainer>
+                    <div className="rating-summary">
+                        <span className="rating-insight">
+                            {(ratingChartData[4]?.count || 0) > (ratingChartData[0]?.count || 0) 
+                                ? "🎉 Sei un appassionato generoso!" 
+                                : "🎯 Sei un critico esigente!"}
+                        </span>
+                    </div>
+                </div>
+
+                {/* Top 5 Anni */}
+                <div className="chart-container">
+                    <h3>🏆 Top 5 Anni Più Visti</h3>
+                    <ResponsiveContainer width="100%" height={250}>
+                        <BarChart 
+                            data={displayData.top_years || []} 
+                            layout="vertical" 
+                            margin={{ left: 60 }}
+                            onMouseLeave={() => setActiveYearIndex(null)}
+                        >
+                            <CartesianGrid strokeDasharray="3 3" stroke="#333" horizontal={false} />
+                            <XAxis type="number" stroke="#757575" />
+                            <YAxis type="category" dataKey="year" stroke="#757575" tick={{ fill: '#fff', fontWeight: 600 }} />
+                            <Tooltip
+                                contentStyle={{ background: '#1a1a1a', border: '2px solid #E50914', borderRadius: '8px' }}
+                                itemStyle={{ color: '#ffffff' }}
+                                labelStyle={{ color: '#E50914', fontWeight: '700' }}
+                                formatter={(value: number) => [`${value} film`, 'Visti']}
+                                cursor={{ fill: 'transparent' }}
+                            />
+                            <Bar 
+                                dataKey="count" 
+                                radius={[0, 8, 8, 0]}
+                                onMouseEnter={(_, index) => setActiveYearIndex(index)}
+                            >
+                                {(displayData.top_years || []).map((_, index) => (
+                                    <Cell 
+                                        key={`cell-${index}`} 
+                                        fill={activeYearIndex === null || activeYearIndex === index 
+                                            ? yearColors[index % yearColors.length] 
+                                            : '#3a3a3a'} 
+                                        style={{ transition: 'fill 0.2s ease' }}
+                                    />
+                                ))}
+                            </Bar>
+                        </BarChart>
+                    </ResponsiveContainer>
                 </div>
             </div>
 
+            {/* ============================================
+                SEZIONE 4: TUO RATING VS IMDB (NUOVO)
+                ============================================ */}
+            {displayData.rating_vs_imdb && displayData.rating_vs_imdb.length > 0 && (
+                <div className="chart-container full-width">
+                    <h3>📊 I Tuoi Voti vs IMDb - Film Più Controversi</h3>
+                    <p className="chart-subtitle">Film dove il tuo giudizio differisce di più dal pubblico</p>
+                    <ResponsiveContainer width="100%" height={350}>
+                        <ScatterChart margin={{ top: 20, right: 30, bottom: 40, left: 50 }}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+                            <XAxis 
+                                type="number" 
+                                dataKey="imdb_rating" 
+                                name="IMDb" 
+                                stroke="#757575"
+                                domain={[0, 10]}
+                                label={{ value: 'Rating IMDb', position: 'bottom', fill: '#757575', offset: 0 }}
+                            />
+                            <YAxis 
+                                type="number" 
+                                dataKey="user_rating_10" 
+                                name="Tuo voto" 
+                                stroke="#757575"
+                                domain={[0, 10]}
+                                label={{ value: 'Tuo Rating (scala 10)', angle: -90, position: 'insideLeft', fill: '#757575' }}
+                            />
+                            <ZAxis type="number" range={[100, 400]} />
+                            <ReferenceLine 
+                                segment={[{ x: 0, y: 0 }, { x: 10, y: 10 }]} 
+                                stroke="#E50914" 
+                                strokeDasharray="5 5"
+                                strokeWidth={2}
+                            />
+                            <Tooltip
+                                contentStyle={{ background: '#1a1a1a', border: '2px solid #E50914', borderRadius: '8px', padding: '12px' }}
+                                content={({ active, payload }) => {
+                                    if (active && payload && payload.length) {
+                                        const data = payload[0].payload;
+                                        return (
+                                            <div style={{ background: '#1a1a1a', border: '2px solid #E50914', borderRadius: '8px', padding: '12px' }}>
+                                                <p style={{ color: '#E50914', fontWeight: 700, margin: '0 0 8px 0' }}>{data.title}</p>
+                                                <p style={{ color: '#fff', margin: '4px 0' }}>Tuo voto: ⭐{data.user_rating}/5 ({data.user_rating_10}/10)</p>
+                                                <p style={{ color: '#fff', margin: '4px 0' }}>IMDb: {data.imdb_rating}/10</p>
+                                                <p style={{ color: data.difference > 0 ? '#22c55e' : '#ef4444', margin: '4px 0' }}>
+                                                    Differenza: {data.difference > 0 ? '+' : ''}{data.difference}
+                                                </p>
+                                            </div>
+                                        );
+                                    }
+                                    return null;
+                                }}
+                            />
+                            <Scatter 
+                                name="Film" 
+                                data={displayData.rating_vs_imdb.slice(0, 15)} 
+                                fill="#E50914"
+                            />
+                        </ScatterChart>
+                    </ResponsiveContainer>
+                    <div className="scatter-legend">
+                        <span>📍 Linea rossa = perfetto accordo con IMDb</span>
+                        <span>⬆️ Sopra = ti è piaciuto più del pubblico</span>
+                        <span>⬇️ Sotto = ti è piaciuto meno</span>
+                    </div>
+                </div>
+            )}
+
+            {/* ============================================
+                SEZIONE 5: TOP REGISTI E ATTORI (NUOVO)
+                ============================================ */}
+            <div className="rankings-section">
+                {/* Top Registi */}
+                <div className="ranking-card">
+                    <h3>🎬 Top 5 Registi</h3>
+                    <div className="ranking-list">
+                        {(displayData.top_directors || []).map((director, index) => (
+                            <div key={director.name} className="ranking-item">
+                                <span className="rank-position">#{index + 1}</span>
+                                <div className="rank-info">
+                                    <span className="rank-name">{director.name}</span>
+                                    <span className="rank-stats">{director.count} film • ⭐ {director.avg_rating}</span>
+                                </div>
+                                <div className="rank-bar">
+                                    <div 
+                                        className="rank-bar-fill" 
+                                        style={{ 
+                                            width: `${(director.count / (displayData.top_directors?.[0]?.count || 1)) * 100}%`,
+                                            background: yearColors[index % yearColors.length]
+                                        }}
+                                    />
+                                </div>
+                            </div>
+                        ))}
+                        {(!displayData.top_directors || displayData.top_directors.length === 0) && (
+                            <p className="no-data">Dati non ancora disponibili</p>
+                        )}
+                    </div>
+                </div>
+
+                {/* Top Attori */}
+                <div className="ranking-card">
+                    <h3>🌟 Top 8 Attori</h3>
+                    <div className="ranking-list">
+                        {(displayData.top_actors || []).map((actor, index) => (
+                            <div key={actor.name} className="ranking-item">
+                                <span className="rank-position">#{index + 1}</span>
+                                <div className="rank-info">
+                                    <span className="rank-name">{actor.name}</span>
+                                    <span className="rank-stats">{actor.count} film</span>
+                                </div>
+                                <div className="rank-bar">
+                                    <div 
+                                        className="rank-bar-fill" 
+                                        style={{ 
+                                            width: `${(actor.count / (displayData.top_actors?.[0]?.count || 1)) * 100}%`,
+                                            background: `hsl(${index * 45}, 70%, 50%)`
+                                        }}
+                                    />
+                                </div>
+                            </div>
+                        ))}
+                        {(!displayData.top_actors || displayData.top_actors.length === 0) && (
+                            <p className="no-data">Dati non ancora disponibili</p>
+                        )}
+                    </div>
+                </div>
+            </div>
+
+            {/* ============================================
+                SEZIONE 6: QUICK STATS (esistente)
+                ============================================ */}
             <div className="quick-stats">
                 <div className="quick-stat-card">
                     <span className="quick-stat-value">{displayData.total_watched}</span>
@@ -444,12 +593,12 @@ export function Dashboard() {
                     <span className="quick-stat-label">Rating Medio</span>
                 </div>
                 <div className="quick-stat-card">
-                    <span className="quick-stat-value">2024</span>
-                    <span className="quick-stat-label">Anno Corrente</span>
+                    <span className="quick-stat-value">{displayData.avg_duration || 120}</span>
+                    <span className="quick-stat-label">Durata Media (min)</span>
                 </div>
                 <div className="quick-stat-card">
-                    <span className="quick-stat-value">Real-Time</span>
-                    <span className="quick-stat-label">Sincronizzazione</span>
+                    <span className="quick-stat-value">{displayData.top_directors?.length || 0}</span>
+                    <span className="quick-stat-label">Registi Diversi</span>
                 </div>
             </div>
         </div>

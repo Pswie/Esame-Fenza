@@ -161,4 +161,105 @@ export const sentimentAPI = {
   }
 };
 
-export default { authAPI, dataAPI, sentimentAPI };
+// ============================================
+// CATALOG API (Film Database)
+// ============================================
+
+export interface CatalogMovie {
+  imdb_id: string;
+  title: string;
+  original_title?: string;
+  year?: number;
+  genres: string[];
+  duration?: number;
+  country?: string;
+  language?: string;
+  director?: string;
+  actors?: string;
+  description?: string;
+  avg_vote?: number;
+  votes?: number;
+  poster_url: string;
+  has_real_poster: boolean;
+}
+
+export interface CatalogSearchResult {
+  results: CatalogMovie[];
+  query: string;
+}
+
+export interface CatalogGenre {
+  name: string;
+  count: number;
+}
+
+export const catalogAPI = {
+  // URL immagine stock di fallback
+  STOCK_POSTER_URL: 'https://via.placeholder.com/500x750/1a1a2e/e50914?text=No+Poster',
+
+  async getMovies(params?: {
+    skip?: number;
+    limit?: number;
+    genre?: string;
+    year?: number;
+    min_rating?: number;
+    search?: string;
+  }): Promise<{ movies: CatalogMovie[]; total: number }> {
+    const queryParams = new URLSearchParams();
+    if (params?.skip) queryParams.append('skip', params.skip.toString());
+    if (params?.limit) queryParams.append('limit', params.limit.toString());
+    if (params?.genre) queryParams.append('genre', params.genre);
+    if (params?.year) queryParams.append('year', params.year.toString());
+    if (params?.min_rating) queryParams.append('min_rating', params.min_rating.toString());
+    if (params?.search) queryParams.append('search', params.search);
+
+    const response = await fetch(`${API_BASE_URL}/catalog/movies?${queryParams}`);
+    if (!response.ok) throw new Error('Errore nel recupero dei film');
+    return response.json();
+  },
+
+  async getMovie(imdbId: string): Promise<CatalogMovie> {
+    const response = await fetch(`${API_BASE_URL}/catalog/movie/${imdbId}`);
+    if (!response.ok) throw new Error('Film non trovato');
+    return response.json();
+  },
+
+  async searchMovies(query: string, limit = 20): Promise<CatalogSearchResult> {
+    const response = await fetch(`${API_BASE_URL}/catalog/search?q=${encodeURIComponent(query)}&limit=${limit}`);
+    if (!response.ok) throw new Error('Errore nella ricerca');
+    return response.json();
+  },
+
+  async getGenres(): Promise<CatalogGenre[]> {
+    const response = await fetch(`${API_BASE_URL}/catalog/genres`);
+    if (!response.ok) throw new Error('Errore nel recupero dei generi');
+    const data = await response.json();
+    return data.genres;
+  },
+
+  async getPoster(imdbId: string): Promise<string> {
+    const response = await fetch(`${API_BASE_URL}/catalog/poster/${imdbId}`);
+    if (!response.ok) return this.STOCK_POSTER_URL;
+    const data = await response.json();
+    return data.poster_url || this.STOCK_POSTER_URL;
+  },
+
+  async getStats(): Promise<{
+    total_movies: number;
+    with_real_poster: number;
+    with_stock_poster: number;
+    top_genres: CatalogGenre[];
+    by_decade: { decade: number; count: number }[];
+  }> {
+    const response = await fetch(`${API_BASE_URL}/catalog/stats`);
+    if (!response.ok) throw new Error('Errore nel recupero delle statistiche');
+    return response.json();
+  },
+
+  // Helper per ottenere il poster con fallback
+  getPosterUrl(movie: CatalogMovie | { poster_url?: string }): string {
+    return movie?.poster_url || this.STOCK_POSTER_URL;
+  }
+};
+
+export default { authAPI, dataAPI, sentimentAPI, catalogAPI };

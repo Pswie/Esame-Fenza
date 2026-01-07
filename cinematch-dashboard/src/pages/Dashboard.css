@@ -358,3 +358,157 @@
 .upload-instructions strong {
     color: var(--text-primary);
 }
+
+/* ============================================
+   NUOVI STILI - Rating Summary
+   ============================================ */
+.rating-summary {
+    text-align: center;
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border-color);
+}
+
+.rating-insight {
+    font-size: 1rem;
+    color: var(--text-secondary);
+}
+
+/* ============================================
+   NUOVI STILI - Full Width Chart
+   ============================================ */
+.chart-container.full-width {
+    grid-column: 1 / -1;
+}
+
+.chart-subtitle {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    margin: -8px 0 16px 0;
+}
+
+.scatter-legend {
+    display: flex;
+    justify-content: center;
+    gap: 24px;
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border-color);
+    flex-wrap: wrap;
+}
+
+.scatter-legend span {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+}
+
+/* ============================================
+   NUOVI STILI - Rankings Section
+   ============================================ */
+.rankings-section {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+    gap: 24px;
+    margin-top: 24px;
+}
+
+.ranking-card {
+    background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg-secondary) 100%);
+    border-radius: 16px;
+    border: 1px solid var(--border-color);
+    padding: 24px;
+    transition: all var(--transition-fast);
+}
+
+.ranking-card:hover {
+    border-color: var(--accent-primary);
+    box-shadow: 0 8px 30px var(--accent-glow);
+}
+
+.ranking-card h3 {
+    color: var(--text-primary);
+    margin: 0 0 20px 0;
+    font-size: 1.2rem;
+}
+
+.ranking-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.ranking-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px;
+    background: var(--bg-secondary);
+    border-radius: 10px;
+    transition: all var(--transition-fast);
+}
+
+.ranking-item:hover {
+    background: var(--bg-hover);
+    transform: translateX(4px);
+}
+
+.rank-position {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--accent-primary);
+    min-width: 35px;
+}
+
+.rank-info {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.rank-name {
+    font-weight: 600;
+    color: var(--text-primary);
+    font-size: 0.95rem;
+}
+
+.rank-stats {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.rank-bar {
+    width: 80px;
+    height: 8px;
+    background: var(--bg-card);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.rank-bar-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.5s ease;
+}
+
+.no-data {
+    color: var(--text-secondary);
+    text-align: center;
+    padding: 20px;
+    font-style: italic;
+}
+
+/* ============================================
+   RESPONSIVE - Rankings
+   ============================================ */
+@media (max-width: 900px) {
+    .rankings-section {
+        grid-template-columns: 1fr;
+    }
+    
+    .scatter-legend {
+        flex-direction: column;
+        align-items: center;
+        gap: 8px;
+    }
+}
