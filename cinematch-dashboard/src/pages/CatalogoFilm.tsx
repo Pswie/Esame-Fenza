@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { catalogAPI, type CatalogMovie, type MovieRating } from '../services/api';
+import { catalogAPI, dataAPI, type CatalogMovie, type MovieRating } from '../services/api';
 import { MovieModal } from '../components/MovieModal';
 import './CatalogoFilm.css';
 
@@ -40,12 +40,7 @@ export function CatalogoFilm() {
 
     const fetchUserMovies = async () => {
         try {
-            const response = await fetch('http://localhost:8000/user-movies', {
-                headers: {
-                    'Authorization': `Bearer ${localStorage.getItem('token')}`
-                }
-            });
-            const data = await response.json();
+            const data = await dataAPI.getUserMovies(0, 5000);
             const moviesList = data.movies || [];
             setMovies(moviesList);
             groupByYear(moviesList);

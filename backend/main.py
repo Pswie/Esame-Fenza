@@ -199,7 +199,11 @@ def calculate_stats(df: pd.DataFrame, movies: list) -> dict:
         {"rating": "⭐5", "count": int(df[df['Rating'] == 5].shape[0]), "stars": 5},
     ]
     
-    top_rated = df[df['Rating'] >= 4].nlargest(10, 'Rating')[['Name', 'Year', 'Rating']].to_dict('records')
+    # Campi estesi per top_rated e recent (per mostrare descrizioni/poster nella dashboard)
+    extended_cols = ['Name', 'Year', 'Rating', 'poster_url', 'description', 'director', 'actors', 'duration', 'imdb_id', 'genres']
+    existing_cols = [c for c in extended_cols if c in df.columns]
+    
+    top_rated = df[df['Rating'] >= 4].nlargest(10, 'Rating')[existing_cols].to_dict('records')
     
     months = ["Gen", "Feb", "Mar", "Apr", "Mag", "Giu", "Lug", "Ago", "Set", "Ott", "Nov", "Dic"]
     if 'Date' in df.columns:
@@ -208,10 +212,13 @@ def calculate_stats(df: pd.DataFrame, movies: list) -> dict:
         df_copy['Month'] = df_copy['DateParsed'].dt.month
         monthly_counts = df_copy.groupby('Month').size().to_dict()
         monthly_data = [{"month": months[i], "films": int(monthly_counts.get(i+1, 0))} for i in range(12)]
-        recent = df_copy.nlargest(10, 'DateParsed')[['Name', 'Year', 'Rating', 'Date']].to_dict('records')
+        
+        # Campi per recent
+        recent_cols = ['Name', 'Year', 'Rating', 'Date'] + [c for c in ['poster_url', 'description', 'director', 'actors', 'duration', 'imdb_id', 'genres'] if c in df_copy.columns]
+        recent = df_copy.nlargest(10, 'DateParsed')[recent_cols].to_dict('records')
     else:
         monthly_data = [{"month": m, "films": 0} for m in months]
-        recent = df.head(10)[['Name', 'Year', 'Rating']].to_dict('records')
+        recent = df.head(10)[existing_cols].to_dict('records')
     
     # Calcola tutte le statistiche avanzate dal catalogo
     advanced_stats = calculate_advanced_stats(movies)
@@ -896,7 +903,11 @@ async def get_movies_by_person(name: str, type: str, current_user_id: str = Depe
                 "rating": m.get('rating', 0),
                 "genres": cat_info.get('genres', []),
                 "director": cat_info.get('director', ''),
-                "actors": cat_info.get('actors', '')
+                "actors": cat_info.get('actors', ''),
+                "description": cat_info.get('description', ''),
+                "duration": cat_info.get('duration'),
+                "avg_vote": cat_info.get('avg_vote'),
+                "imdb_id": cat_info.get('imdb_id')
             })
             
     return results
@@ -1127,7 +1138,7 @@ async def get_user_movies(
                     {"english_title": {"$regex": regex_pattern, "$options": "i"}} # Supporto per titoli inglesi
                 ]
             },
-            {"title": 1, "original_title": 1, "english_title": 1, "year": 1, "poster_url": 1, "imdb_id": 1, "genres": 1, "description": 1, "director": 1, "actors": 1, "votes": 1, "avg_vote": 1}
+            {"title": 1, "original_title": 1, "english_title": 1, "year": 1, "poster_url": 1, "imdb_id": 1, "genres": 1, "description": 1, "director": 1, "actors": 1, "votes": 1, "avg_vote": 1, "duration": 1}
         )
         
         # Costruisci cache con chiave title_year
