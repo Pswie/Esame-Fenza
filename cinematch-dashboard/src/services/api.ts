@@ -146,6 +146,18 @@ export const dataAPI = {
     
     const data = await response.json();
     return data.history || [];
+  },
+
+  async getUserMovies(skip = 0, limit = 1000): Promise<{ movies: MovieRating[]; total: number }> {
+    const response = await fetch(`${API_BASE_URL}/user-movies?skip=${skip}&limit=${limit}`, {
+      headers: getAuthHeaders()
+    });
+    
+    if (!response.ok) {
+      throw new Error('Errore nel recupero dei film utente');
+    }
+    
+    return response.json();
   }
 };
 
