@@ -13,10 +13,12 @@ import requests
 import io
 import os
 import random
-from datetime import datetime
+import re
+import unicodedata
+from datetime import datetime, timedelta
 from pymongo import MongoClient
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List, Dict
 from auth import get_password_hash, verify_password, create_access_token, get_current_user_id
 
 # ============================================
@@ -66,8 +68,12 @@ class UserAuth(BaseModel):
 class UserRegister(BaseModel):
     username: str
     password: str
-    email: Optional[str] = None
+    email: str
     full_name: Optional[str] = None
+    address: Optional[str] = None
+    city: Optional[str] = None
+    province: Optional[str] = None  # e.g., "napoli"
+    region: Optional[str] = None    # e.g., "Campania"
 
 # ============================================
 # STARTUP EVENT
@@ -112,8 +118,18 @@ async def startup_event():
     scheduler = BackgroundScheduler()
     # Esegue ogni 24 ore
     scheduler.add_job(updater.fetch_new_releases, 'interval', hours=24)
+    
+    # --- SCHEDULER CINEMA CAMPANIA ---
+    from scrape_comingsoon import main as run_cinema_scraper
+    from cinema_film_sync import sync_films_to_catalog
+    
+    # Scraper ComingSoon alle 00:00 (mezzanotte)
+    scheduler.add_job(run_cinema_scraper, 'cron', hour=0, minute=0, id='cinema_scraper')
+    # Sync film al catalogo alle 00:30
+    scheduler.add_job(sync_films_to_catalog, 'cron', hour=0, minute=30, id='cinema_sync')
+    
     scheduler.start()
-    print("🕒 Scheduler avviato: Aggiornamento catalogo automatico ogni 24h.")
+    print("🕒 Scheduler avviato: Movie Updater ogni 24h + Cinema Scraper a mezzanotte.")
     
     # Eseguiamo anche un update SUBITO all'avvio in background
     # per riempire il buco del 2026 adesso
@@ -511,6 +527,10 @@ async def register(user: UserRegister):
         "user_id": user.username,
         "email": user.email,
         "full_name": user.full_name,
+        "address": user.address,
+        "city": user.city,
+        "province": user.province.lower() if user.province else None,
+        "region": user.region,
         "created_at": datetime.utcnow().isoformat(),
         "is_active": True,
         "has_data": False,
@@ -524,10 +544,15 @@ async def register(user: UserRegister):
 @app.post("/login")
 async def login(user: UserAuth):
     """Effettua il login."""
-    db_user = users_collection.find_one({"username": user.username})
+    db_user = users_collection.find_one({
+        "$or": [
+            {"username": user.username},
+            {"email": user.username}
+        ]
+    })
     
     if not db_user:
-        raise HTTPException(status_code=401, detail="Username non trovato")
+        raise HTTPException(status_code=401, detail="Utente non trovato")
     
     if not verify_password(user.password, db_user["password"]):
         raise HTTPException(status_code=401, detail="Password non corretta")
@@ -559,6 +584,156 @@ async def get_current_user(current_user_id: str = Depends(get_current_user_id)):
     user["movies_count"] = real_count
     
     return user
+
+# ============================================
+# CINEMA ENDPOINTS
+# ============================================
+# Collection per showtimes cinema
+cinema_db = client["cinema_db"]
+showtimes_collection = cinema_db["showtimes"]
+
+@app.get("/cinema/films")
+async def get_cinema_films(current_user_id: str = Depends(get_current_user_id)):
+    """Ottiene i film in programmazione nella provincia dell'utente con matching robusto."""
+    
+    def normalize_title(text: str) -> str:
+        """Rimuove accenti e caratteri speciali per matching."""
+        if not text: return ""
+        normalized = unicodedata.normalize('NFD', text)
+        result = "".join([c for c in normalized if not unicodedata.combining(c)])
+        result = re.sub(r'[^a-zA-Z0-9\s]', ' ', result)
+        return " ".join(result.split()).lower()
+    
+    def find_in_catalog(title: str, original_title: str = None) -> dict:
+        """Cerca un film nel catalogo con logica robusta (accenti, varianti)."""
+        # 1. Ricerca esatta per titolo
+        if title:
+            escaped_title = re.escape(title)
+            result = movies_catalog.find_one({
+                "$or": [
+                    {"title": {"$regex": f"^{escaped_title}$", "$options": "i"}},
+                    {"original_title": {"$regex": f"^{escaped_title}$", "$options": "i"}}
+                ]
+            })
+            if result:
+                return result
+        
+        # 2. Ricerca esatta per titolo originale
+        if original_title:
+            escaped_original = re.escape(original_title)
+            result = movies_catalog.find_one({
+                "$or": [
+                    {"title": {"$regex": f"^{escaped_original}$", "$options": "i"}},
+                    {"original_title": {"$regex": f"^{escaped_original}$", "$options": "i"}}
+                ]
+            })
+            if result:
+                return result
+        
+        # 3. Ricerca con titolo normalizzato (senza accenti)
+        norm_title = normalize_title(title) if title else ""
+        norm_original = normalize_title(original_title) if original_title else ""
+        
+        for norm in [norm_title, norm_original]:
+            if not norm or len(norm) < 3:
+                continue
+                
+            # Cerca candidati con parole chiave
+            search_words = [w for w in norm.split()[:3] if len(w) > 2]
+            if not search_words:
+                continue
+                
+            word_pattern = "|".join([re.escape(w) for w in search_words])
+            candidates = movies_catalog.find({
+                "$or": [
+                    {"title": {"$regex": word_pattern, "$options": "i"}},
+                    {"original_title": {"$regex": word_pattern, "$options": "i"}}
+                ]
+            }).limit(30)
+            
+            for candidate in candidates:
+                cand_norm_title = normalize_title(candidate.get("title", ""))
+                cand_norm_orig = normalize_title(candidate.get("original_title", ""))
+                
+                # Match esatto normalizzato
+                if norm == cand_norm_title or norm == cand_norm_orig:
+                    return candidate
+                
+                # Match parziale (contenimento) per titoli lunghi
+                if len(norm) > 5:
+                    if norm in cand_norm_title or cand_norm_title in norm:
+                        return candidate
+                    if cand_norm_orig and (norm in cand_norm_orig or cand_norm_orig in norm):
+                        return candidate
+        
+        return None
+
+    # Ottieni provincia utente (default: napoli / Pompei)
+    user = users_collection.find_one({"user_id": current_user_id})
+    user_province = user.get("province", "napoli") if user else "napoli"
+    if not user_province:
+        user_province = "napoli"
+    user_province = user_province.lower()
+    
+    # Query showtimes per la provincia
+    showtimes_cursor = showtimes_collection.find(
+        {"province_slug": user_province},
+        {"_id": 0}
+    ).sort("updated_at", -1).limit(6)
+    
+    films = []
+    
+    for showtime in showtimes_cursor:
+        film_title = showtime.get("film_title", "")
+        film_original_title = showtime.get("film_original_title", "")
+        director = showtime.get("director", "")
+        
+        # Cerca nel catalogo con logica robusta
+        catalog_info = find_in_catalog(film_title, film_original_title)
+
+        # Limita a 5 cinema per film
+        cinemas = showtime.get("cinemas", [])[:5]
+        
+        # Formatta orari per ogni cinema
+        formatted_cinemas = []
+        for cinema in cinemas:
+            formatted_cinemas.append({
+                "name": cinema.get("cinema_name", ""),
+                "address": cinema.get("address", ""),
+                "showtimes": [
+                    {"time": s.get("time", ""), "price": s.get("price", ""), "sala": s.get("sala", "")}
+                    for s in cinema.get("showtimes", [])[:6]  # Max 6 orari
+                ]
+            })
+        
+        # Costruisci oggetto film
+        film = {
+            "id": showtime.get("film_id", ""),
+            "title": film_title,
+            "original_title": film_original_title,
+            "director": director,
+            "poster": catalog_info.get("poster_url") if catalog_info else None,
+            "description": catalog_info.get("description") if catalog_info else None,
+            "rating": catalog_info.get("avg_vote") if catalog_info else None,
+            "genres": catalog_info.get("genres", []) if catalog_info else [],
+            "year": catalog_info.get("year") if catalog_info else None,
+            "duration": catalog_info.get("duration") if catalog_info else None,
+            "cinemas": formatted_cinemas,
+            "province": showtime.get("province", "")
+        }
+        
+        # Fallback poster se non trovato
+        if not film["poster"]:
+            film["poster"] = "https://via.placeholder.com/500x750/1a1a2e/e50914?text=No+Poster"
+        
+        films.append(film)
+    
+    return {
+        "province": user_province.capitalize(),
+        "films": films,
+        "total": len(films)
+    }
+
 
 # ============================================
 # DATA ENDPOINTS

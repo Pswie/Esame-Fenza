@@ -1,84 +1,192 @@
-import { useState } from 'react';
-import { SentimentGauge } from '../components/SentimentGauge';
-import { cinemaMovies } from '../data/mockData';
+import { useState, useEffect } from 'react';
 import './Cinema.css';
 
+interface CinemaShowtime {
+    time: string;
+    price: string;
+    sala: string;
+}
+
+interface CinemaInfo {
+    name: string;
+    address: string;
+    showtimes: CinemaShowtime[];
+}
+
+interface CinemaFilm {
+    id: string;
+    title: string;
+    original_title: string;
+    director: string;
+    poster: string;
+    description: string;
+    rating: number | null;
+    genres: string[];
+    year: number | null;
+    duration: number | null;
+    cinemas: CinemaInfo[];
+    province: string;
+}
+
+interface CinemaResponse {
+    province: string;
+    films: CinemaFilm[];
+    total: number;
+}
+
 export function Cinema() {
-    const [selectedMovie, setSelectedMovie] = useState(cinemaMovies[0]);
+    const [films, setFilms] = useState<CinemaFilm[]>([]);
+    const [selectedFilm, setSelectedFilm] = useState<CinemaFilm | null>(null);
+    const [province, setProvince] = useState<string>('');
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
+
+    useEffect(() => {
+        fetchCinemaFilms();
+    }, []);
+
+    const fetchCinemaFilms = async () => {
+        try {
+            const token = localStorage.getItem('token');
+            const response = await fetch('http://localhost:8000/cinema/films', {
+                headers: {
+                    'Authorization': `Bearer ${token}`
+                }
+            });
+
+            if (response.ok) {
+                const data: CinemaResponse = await response.json();
+                setFilms(data.films);
+                setProvince(data.province);
+                if (data.films.length > 0) {
+                    setSelectedFilm(data.films[0]);
+                }
+            } else {
+                setError('Errore nel caricamento dei film');
+            }
+        } catch (err) {
+            setError('Errore di connessione');
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    if (loading) {
+        return (
+            <div className="cinema-page">
+                <div className="cinema-loading">
+                    <div className="loading-spinner"></div>
+                    <p>Caricamento film in sala...</p>
+                </div>
+            </div>
+        );
+    }
+
+    if (error || films.length === 0) {
+        return (
+            <div className="cinema-page">
+                <div className="page-header">
+                    <h1>🎭 Al Cinema Ora</h1>
+                    <p>{error || 'Nessun film in programmazione nella tua zona'}</p>
+                </div>
+            </div>
+        );
+    }
 
     return (
         <div className="cinema-page">
             <div className="page-header">
                 <h1>🎭 Al Cinema Ora</h1>
-                <p>Film in programmazione presso The Space Cinema</p>
+                <p>Film in programmazione a <strong>{province}</strong></p>
             </div>
 
             <div className="cinema-layout">
-                <div className="featured-movie">
-                    <div className="featured-poster">
-                        <img src={selectedMovie.poster} alt={selectedMovie.title} />
-                        <div className="poster-overlay">
-                            <div className="rating-badge">
-                                <span className="star">★</span> {selectedMovie.rating}
-                            </div>
-                        </div>
-                    </div>
-
-                    <div className="featured-info">
-                        <span className="theater-badge">📍 The Space Cinema</span>
-                        <h2>{selectedMovie.title}</h2>
-                        <p className="movie-meta">
-                            {selectedMovie.year} • {selectedMovie.director}
-                        </p>
-                        <div className="genres-row">
-                            {selectedMovie.genres.map((genre) => (
-                                <span key={genre} className="genre-tag">{genre}</span>
-                            ))}
+                {/* Film Principale Selezionato */}
+                {selectedFilm && (
+                    <div className="featured-movie">
+                        <div className="featured-poster">
+                            <img src={selectedFilm.poster} alt={selectedFilm.title} />
+                            {selectedFilm.rating && (
+                                <div className="poster-overlay">
+                                    <div className="rating-badge">
+                                        <span className="star">★</span> {selectedFilm.rating.toFixed(1)}
+                                    </div>
+                                </div>
+                            )}
                         </div>
 
-                        <div className="showtimes-section">
-                            <h4>🕐 Orari Disponibili</h4>
-                            <div className="showtimes-grid">
-                                {selectedMovie.showtimes.map((time) => (
-                                    <button key={time} className="showtime-btn">
-                                        {time}
-                                    </button>
+                        <div className="featured-info">
+                            <h2>{selectedFilm.title}</h2>
+                            {selectedFilm.original_title && selectedFilm.original_title !== selectedFilm.title && (
+                                <p className="original-title">({selectedFilm.original_title})</p>
+                            )}
+                            <p className="movie-meta">
+                                {selectedFilm.year && `${selectedFilm.year} • `}
+                                {selectedFilm.director && `🎬 ${selectedFilm.director}`}
+                                {selectedFilm.duration && ` • ${selectedFilm.duration} min`}
+                            </p>
+
+                            {selectedFilm.genres.length > 0 && (
+                                <div className="genres-row">
+                                    {selectedFilm.genres.slice(0, 4).map((genre) => (
+                                        <span key={genre} className="genre-tag">{genre}</span>
+                                    ))}
+                                </div>
+                            )}
+
+                            {selectedFilm.description && (
+                                <div className="description-section">
+                                    <p className="movie-description">{selectedFilm.description}</p>
+                                </div>
+                            )}
+
+                            {/* Cinema e Orari */}
+                            <div className="cinemas-section">
+                                <h4>📍 Cinema Disponibili</h4>
+                                {selectedFilm.cinemas.map((cinema, idx) => (
+                                    <div key={idx} className="cinema-block">
+                                        <div className="cinema-header">
+                                            <span className="cinema-name">{cinema.name}</span>
+                                            {cinema.address && (
+                                                <span className="cinema-address">{cinema.address}</span>
+                                            )}
+                                        </div>
+                                        <div className="showtimes-grid">
+                                            {cinema.showtimes.map((show, sIdx) => (
+                                                <button key={sIdx} className="showtime-btn">
+                                                    <span className="time">{show.time}</span>
+                                                    {show.price && <span className="price">{show.price}</span>}
+                                                    {show.sala && <span className="sala">{show.sala}</span>}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </div>
                                 ))}
                             </div>
                         </div>
-
-                        <div className="sentiment-section">
-                            <h4>💬 Sentiment Reddit</h4>
-                            <SentimentGauge score={selectedMovie.redditSentiment} size="medium" />
-                            <p className="sentiment-note">
-                                Basato su {Math.floor(Math.random() * 500 + 200)} post analizzati con RoBERTa
-                            </p>
-                        </div>
-
-                        <button className="book-btn">
-                            🎟️ Prenota Biglietti
-                        </button>
                     </div>
-                </div>
+                )}
 
+                {/* Lista Altri Film */}
                 <div className="other-movies">
-                    <h3>Altri Film in Sala</h3>
+                    <h3>Film in Sala ({films.length})</h3>
                     <div className="movie-list">
-                        {cinemaMovies.map((movie) => (
+                        {films.map((film) => (
                             <div
-                                key={movie.id}
-                                className={`movie-list-item ${selectedMovie.id === movie.id ? 'active' : ''}`}
-                                onClick={() => setSelectedMovie(movie)}
+                                key={film.id}
+                                className={`movie-list-item ${selectedFilm?.id === film.id ? 'active' : ''}`}
+                                onClick={() => setSelectedFilm(film)}
                             >
-                                <img src={movie.poster} alt={movie.title} className="list-poster" />
+                                <img src={film.poster} alt={film.title} className="list-poster" />
                                 <div className="list-info">
-                                    <h4>{movie.title}</h4>
-                                    <p>{movie.genres.slice(0, 2).join(', ')}</p>
+                                    <h4>{film.title}</h4>
+                                    <p>{film.genres.slice(0, 2).join(', ')}</p>
                                     <div className="list-meta">
-                                        <span className="rating">★ {movie.rating}</span>
-                                        <span className="sentiment-mini">
-                                            {movie.redditSentiment >= 70 ? '😊' : movie.redditSentiment >= 40 ? '😐' : '😔'}
-                                            {movie.redditSentiment}%
+                                        {film.rating && (
+                                            <span className="rating">★ {film.rating.toFixed(1)}</span>
+                                        )}
+                                        <span className="cinemas-count">
+                                            🎦 {film.cinemas.length} cinema
                                         </span>
                                     </div>
                                 </div>

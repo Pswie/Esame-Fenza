@@ -12,3 +12,4 @@ python-jose[cryptography]
 scipy
 bcrypt==4.0.1
 apscheduler
+beautifulsoup4
