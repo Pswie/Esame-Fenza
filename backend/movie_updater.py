@@ -15,6 +15,28 @@ class MovieUpdater:
         self.api_key = tmdb_api_key
         self.base_url = "https://api.themoviedb.org/3"
 
+    def normalize_title(self, text: str) -> str:
+        """Rimuove accenti e caratteri speciali per matching/ricerca."""
+        if not text: return ""
+        import unicodedata
+        import re
+        normalized = unicodedata.normalize('NFD', text)
+        result = "".join([c for c in normalized if not unicodedata.combining(c)])
+        
+        special_chars = {
+            'ā': 'a', 'ē': 'e', 'ī': 'i', 'ō': 'o', 'ū': 'u',
+            'Ā': 'A', 'Ē': 'E', 'Ī': 'I', 'Ō': 'O', 'Ū': 'U',
+            'ł': 'l', 'Ł': 'L', 'ø': 'o', 'Ø': 'O', 'æ': 'ae', 'Æ': 'AE',
+            'œ': 'oe', 'Œ': 'OE', 'ß': 'ss', 'đ': 'd', 'Đ': 'D',
+            'ñ': 'n', 'Ñ': 'N', 'ç': 'c', 'Ç': 'C'
+        }
+        for char, replacement in special_chars.items():
+            result = result.replace(char, replacement)
+        
+        result = re.sub(r'[^a-zA-Z0-9\s]', ' ', result)
+        result = " ".join(result.split()).lower()
+        return result
+
     def fetch_new_releases(self):
         """Scarica i film usciti recentemente (Cinema e Digital)."""
         print("🔄 [Updater] Inizio aggiornamento nuove uscite...")
@@ -162,6 +184,8 @@ class MovieUpdater:
                 "imdb_title_id": final_id, # Coerenza con movies_final.csv
                 "title": details.get("title"),
                 "original_title": details.get("original_title"),
+                "normalized_title": self.normalize_title(details.get("title")),
+                "normalized_original_title": self.normalize_title(details.get("original_title")) if details.get("original_title") else None,
                 "english_title": details.get("original_title") if details.get("original_language") == "en" else None,
                 "year": int(details.get("release_date")[:4]),
                 "date_published": details.get("release_date"),

@@ -288,6 +288,9 @@ class CinemaFilmSync:
             crew = credits.get("crew", [])
             cast = credits.get("cast", [])
             
+            title = tmdb_details.get("title")
+            original_title = tmdb_details.get("original_title")
+            
             directors = [p['name'] for p in crew if p.get('job') == 'Director']
             writers = [p['name'] for p in crew if p.get('department') == 'Writing']
             actors_list = [p['name'] for p in cast[:15]]
@@ -312,9 +315,11 @@ class CinemaFilmSync:
             new_movie = {
                 "imdb_id": final_id,
                 "imdb_title_id": final_id,
-                "title": tmdb_details.get("title"),
-                "original_title": tmdb_details.get("original_title"),
-                "english_title": tmdb_details.get("original_title") if tmdb_details.get("original_language") == "en" else None,
+                "title": title,
+                "original_title": original_title,
+                "normalized_title": self.normalize_title(title),
+                "normalized_original_title": self.normalize_title(original_title) if original_title else None,
+                "english_title": original_title if tmdb_details.get("original_language") == "en" else None,
                 "year": int(release_date[:4]),
                 "date_published": release_date,
                 "genres": genres_list,

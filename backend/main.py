@@ -89,6 +89,11 @@ async def startup_event():
         users_collection.create_index("user_id", unique=True)
         movies_collection.create_index("user_id")
         stats_collection.create_index("user_id", unique=True)
+        
+        # Indici per il catalogo (titoli normalizzati per ricerca veloce)
+        movies_catalog.create_index("normalized_title")
+        movies_catalog.create_index("normalized_original_title")
+        
         print("✅ Indici MongoDB creati")
     except Exception as e:
         print(f"⚠️ Indici già esistenti: {e}")
@@ -592,80 +597,87 @@ async def get_current_user(current_user_id: str = Depends(get_current_user_id)):
 cinema_db = client["cinema_db"]
 showtimes_collection = cinema_db["showtimes"]
 
+def normalize_title(text: str) -> str:
+    """Rimuove accenti e caratteri speciali per matching/ricerca."""
+    if not text: return ""
+    # Normalizza in NFD (decomposizione) e rimuove i caratteri non-spacing mark (accenti)
+    normalized = unicodedata.normalize('NFD', text)
+    result = "".join([c for c in normalized if not unicodedata.combining(c)])
+    
+    # Mappa caratteri speciali comuni che non vengono decomposti
+    special_chars = {
+        'ā': 'a', 'ē': 'e', 'ī': 'i', 'ō': 'o', 'ū': 'u',
+        'Ā': 'A', 'Ē': 'E', 'Ī': 'I', 'Ō': 'O', 'Ū': 'U',
+        'ł': 'l', 'Ł': 'L', 'ø': 'o', 'Ø': 'O', 'æ': 'ae', 'Æ': 'AE',
+        'œ': 'oe', 'Œ': 'OE', 'ß': 'ss', 'đ': 'd', 'Đ': 'D',
+        'ñ': 'n', 'Ñ': 'N', 'ç': 'c', 'Ç': 'C'
+    }
+    for char, replacement in special_chars.items():
+        result = result.replace(char, replacement)
+    
+    # Rimuove tutto ciò che non è alfanumerico o spazio, e normalizza gli spazi
+    result = re.sub(r'[^a-zA-Z0-9\s]', ' ', result)
+    result = " ".join(result.split()).lower()
+    return result
+
 @app.get("/cinema/films")
 async def get_cinema_films(current_user_id: str = Depends(get_current_user_id)):
     """Ottiene i film in programmazione nella provincia dell'utente con matching robusto."""
     
-    def normalize_title(text: str) -> str:
-        """Rimuove accenti e caratteri speciali per matching."""
-        if not text: return ""
-        normalized = unicodedata.normalize('NFD', text)
-        result = "".join([c for c in normalized if not unicodedata.combining(c)])
-        result = re.sub(r'[^a-zA-Z0-9\s]', ' ', result)
-        return " ".join(result.split()).lower()
-    
     def find_in_catalog(title: str, original_title: str = None) -> dict:
-        """Cerca un film nel catalogo con logica robusta (accenti, varianti)."""
-        # 1. Ricerca esatta per titolo
+        """Cerca un film nel catalogo con logica robusta usando i campi indicizzati."""
+        # 1. Ricerca esatta per titolo/titolo originale
+        or_conditions = []
         if title:
             escaped_title = re.escape(title)
-            result = movies_catalog.find_one({
-                "$or": [
-                    {"title": {"$regex": f"^{escaped_title}$", "$options": "i"}},
-                    {"original_title": {"$regex": f"^{escaped_title}$", "$options": "i"}}
-                ]
-            })
-            if result:
-                return result
+            or_conditions.extend([
+                {"title": {"$regex": f"^{escaped_title}$", "$options": "i"}},
+                {"original_title": {"$regex": f"^{escaped_title}$", "$options": "i"}},
+                {"normalized_title": normalize_title(title)}
+            ])
         
-        # 2. Ricerca esatta per titolo originale
         if original_title:
             escaped_original = re.escape(original_title)
-            result = movies_catalog.find_one({
-                "$or": [
-                    {"title": {"$regex": f"^{escaped_original}$", "$options": "i"}},
-                    {"original_title": {"$regex": f"^{escaped_original}$", "$options": "i"}}
-                ]
-            })
+            or_conditions.extend([
+                {"title": {"$regex": f"^{escaped_original}$", "$options": "i"}},
+                {"original_title": {"$regex": f"^{escaped_original}$", "$options": "i"}},
+                {"normalized_title": normalize_title(original_title)}
+            ])
+
+        if or_conditions:
+            result = movies_catalog.find_one({"$or": or_conditions})
             if result:
                 return result
         
-        # 3. Ricerca con titolo normalizzato (senza accenti)
+        # 2. Ricerca per titoli normalizzati (già indicizzati)
         norm_title = normalize_title(title) if title else ""
         norm_original = normalize_title(original_title) if original_title else ""
         
         for norm in [norm_title, norm_original]:
             if not norm or len(norm) < 3:
                 continue
-                
-            # Cerca candidati con parole chiave
-            search_words = [w for w in norm.split()[:3] if len(w) > 2]
-            if not search_words:
-                continue
-                
-            word_pattern = "|".join([re.escape(w) for w in search_words])
-            candidates = movies_catalog.find({
-                "$or": [
-                    {"title": {"$regex": word_pattern, "$options": "i"}},
-                    {"original_title": {"$regex": word_pattern, "$options": "i"}}
-                ]
-            }).limit(30)
             
-            for candidate in candidates:
-                cand_norm_title = normalize_title(candidate.get("title", ""))
-                cand_norm_orig = normalize_title(candidate.get("original_title", ""))
-                
-                # Match esatto normalizzato
-                if norm == cand_norm_title or norm == cand_norm_orig:
-                    return candidate
-                
-                # Match parziale (contenimento) per titoli lunghi
-                if len(norm) > 5:
-                    if norm in cand_norm_title or cand_norm_title in norm:
-                        return candidate
-                    if cand_norm_orig and (norm in cand_norm_orig or cand_norm_orig in norm):
-                        return candidate
-        
+            # Match esatto su campo normalizzato
+            result = movies_catalog.find_one({
+                "$or": [
+                    {"normalized_title": norm},
+                    {"normalized_original_title": norm}
+                ]
+            })
+            if result:
+                return result
+            
+            # Match parziale su titoli lunghi
+            if len(norm) > 8:
+                result = movies_catalog.find_one({
+                    "$or": [
+                        {"normalized_title": {"$regex": f".*{re.escape(norm)}.*"}},
+                        {"normalized_original_title": {"$regex": f".*{re.escape(norm)}.*"}}
+                    ]
+                })
+                if result:
+                    return result
+
         return None
 
     # Ottieni provincia utente (default: napoli / Pompei)
@@ -675,17 +687,31 @@ async def get_cinema_films(current_user_id: str = Depends(get_current_user_id)):
         user_province = "napoli"
     user_province = user_province.lower()
     
-    # Query showtimes per la provincia
+    # Ottieni film visti dall'utente per filtraggio
+    user_watched = list(movies_collection.find({"user_id": current_user_id}, {"name": 1}))
+    watched_titles = {normalize_title(m['name']) for m in user_watched}
+    
+    # Query showtimes per la provincia (prendiamo più film per permettere il filtraggio)
     showtimes_cursor = showtimes_collection.find(
         {"province_slug": user_province},
         {"_id": 0}
-    ).sort("updated_at", -1).limit(6)
+    ).sort("updated_at", -1).limit(30)
     
     films = []
+    max_films = 8 
     
     for showtime in showtimes_cursor:
+        if len(films) >= max_films:
+            break
+            
         film_title = showtime.get("film_title", "")
         film_original_title = showtime.get("film_original_title", "")
+        
+        # Salta se già visto
+        if normalize_title(film_title) in watched_titles or \
+           (film_original_title and normalize_title(film_original_title) in watched_titles):
+            continue
+            
         director = showtime.get("director", "")
         
         # Cerca nel catalogo con logica robusta
@@ -718,6 +744,7 @@ async def get_cinema_films(current_user_id: str = Depends(get_current_user_id)):
             "genres": catalog_info.get("genres", []) if catalog_info else [],
             "year": catalog_info.get("year") if catalog_info else None,
             "duration": catalog_info.get("duration") if catalog_info else None,
+            "actors": catalog_info.get("actors") if catalog_info else None,
             "cinemas": formatted_cinemas,
             "province": showtime.get("province", "")
         }
@@ -881,9 +908,14 @@ async def upload_csv(
             entry = {
                 "title": row['Name'],
                 "year": int(row['Year']) if pd.notna(row.get('Year')) else None,
+                "normalized_title": normalize_title(row['Name']),
                 "loaded_at": datetime.utcnow().isoformat(),
                 "source": "csv_upload_enriched"
             }
+            
+            orig_title = row.get('original_title')
+            if pd.notna(orig_title):
+                entry["normalized_original_title"] = normalize_title(str(orig_title))
             
             # Mappa tutte le colonne presenti
             for col in possible_cols:
@@ -1213,12 +1245,17 @@ def fetch_metadata_from_tmdb(title: str, year: Optional[int]) -> Optional[dict]:
                 poster_path = details.get("poster_path") or tmdb_movie.get("poster_path")
                 poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else STOCK_POSTER_URL
                 
+                title_it = details.get("title", title)
+                original_title = details.get("original_title")
+
                 # Mappatura completa come movie_final.csv
                 new_catalog_entry = {
                     "imdb_id": details.get("imdb_id") if details.get("imdb_id") else f"tmdb_{movie_id}",
                     "imdb_title_id": details.get("imdb_id") if details.get("imdb_id") else f"tmdb_{movie_id}",
-                    "title": details.get("title", title),
-                    "original_title": details.get("original_title"),
+                    "title": title_it,
+                    "original_title": original_title,
+                    "normalized_title": normalize_title(title_it),
+                    "normalized_original_title": normalize_title(original_title) if original_title else None,
                     "english_title": details.get("original_title") if details.get("original_language") == "en" else None,
                     "year": int(details.get("release_date", "0")[:4]) if details.get("release_date") else year,
                     "date_published": details.get("release_date"),
@@ -1672,9 +1709,12 @@ async def get_catalog_movies(
     if min_rating:
         query["avg_vote"] = {"$gte": min_rating}
     if search:
+        norm_search = normalize_title(search)
         query["$or"] = [
             {"title": {"$regex": search, "$options": "i"}},
             {"original_title": {"$regex": search, "$options": "i"}},
+            {"normalized_title": {"$regex": norm_search, "$options": "i"}},
+            {"normalized_original_title": {"$regex": norm_search, "$options": "i"}},
             {"director": {"$regex": search, "$options": "i"}},
             {"actors": {"$regex": search, "$options": "i"}}
         ]
@@ -1682,7 +1722,7 @@ async def get_catalog_movies(
     movies = list(movies_catalog.find(
         query,
         {"_id": 0}
-    ).sort("votes", -1).skip(skip).limit(limit))
+    ).sort([("date_published", -1), ("votes", -1)]).skip(skip).limit(limit))
     
     # Assicura che ogni film abbia un poster_url
     for movie in movies:
@@ -1720,13 +1760,16 @@ async def search_catalog(
     limit: int = 20
 ):
     """Ricerca film nel catalogo per titolo."""
+    norm_q = normalize_title(q)
     movies = list(movies_catalog.find(
         {"$or": [
             {"title": {"$regex": q, "$options": "i"}},
-            {"original_title": {"$regex": q, "$options": "i"}}
+            {"original_title": {"$regex": q, "$options": "i"}},
+            {"normalized_title": {"$regex": norm_q, "$options": "i"}},
+            {"normalized_original_title": {"$regex": norm_q, "$options": "i"}}
         ]},
-        {"_id": 0, "imdb_id": 1, "title": 1, "year": 1, "poster_url": 1, "avg_vote": 1, "genres": 1, "description": 1, "director": 1, "actors": 1, "duration": 1}
-    ).sort("votes", -1).limit(limit))
+        {"_id": 0, "imdb_id": 1, "title": 1, "year": 1, "poster_url": 1, "avg_vote": 1, "genres": 1, "description": 1, "director": 1, "actors": 1, "duration": 1, "date_published": 1}
+    ).sort([("date_published", -1), ("votes", -1)]).limit(limit))
     
     # Assicura poster_url
     for movie in movies:

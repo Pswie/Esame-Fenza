@@ -34,6 +34,29 @@ def parse_genres(genre_string: str) -> list:
     return [g.strip() for g in str(genre_string).split(",")]
 
 
+def normalize_title(text: str) -> str:
+    """Rimuove accenti e caratteri speciali per matching/ricerca."""
+    if not text: return ""
+    import unicodedata
+    import re
+    normalized = unicodedata.normalize('NFD', text)
+    result = "".join([c for c in normalized if not unicodedata.combining(c)])
+    
+    special_chars = {
+        'ā': 'a', 'ē': 'e', 'ī': 'i', 'ō': 'o', 'ū': 'u',
+        'Ā': 'A', 'Ē': 'E', 'Ī': 'I', 'Ō': 'O', 'Ū': 'U',
+        'ł': 'l', 'Ł': 'L', 'ø': 'o', 'Ø': 'O', 'æ': 'ae', 'Æ': 'AE',
+        'œ': 'oe', 'Œ': 'OE', 'ß': 'ss', 'đ': 'd', 'Đ': 'D',
+        'ñ': 'n', 'Ñ': 'N', 'ç': 'c', 'Ç': 'C'
+    }
+    for char, replacement in special_chars.items():
+        result = result.replace(char, replacement)
+    
+    result = re.sub(r'[^a-zA-Z0-9\s]', ' ', result)
+    result = " ".join(result.split()).lower()
+    return result
+
+
 def get_poster_url(row) -> str:
     """
     Restituisce l'URL del poster.
@@ -68,6 +91,8 @@ def load_movies_catalog():
     catalog.create_index("title")
     catalog.create_index("year")
     catalog.create_index("genres")
+    catalog.create_index("normalized_title")
+    catalog.create_index("normalized_original_title")
     catalog.create_index([("title", "text"), ("original_title", "text"), ("director", "text")])
     
     print(f"📂 Lettura file: {CSV_PATH}")
@@ -91,10 +116,15 @@ def load_movies_catalog():
                 skipped += 1
                 continue
             
+            title = str(row['title'])
+            original_title = clean_value(row.get('original_title'))
+
             movie = {
                 "imdb_id": clean_value(row.get('imdb_title_id')),
-                "title": str(row['title']),
-                "original_title": clean_value(row.get('original_title')),
+                "title": title,
+                "original_title": original_title,
+                "normalized_title": normalize_title(title),
+                "normalized_original_title": normalize_title(original_title) if original_title else None,
                 "year": int(row['year']) if pd.notna(row.get('year')) else None,
                 "date_published": clean_value(row.get('date_published')),
                 "genres": parse_genres(row.get('genre')),

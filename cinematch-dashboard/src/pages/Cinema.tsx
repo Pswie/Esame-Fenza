@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react';
+import { MovieModal } from '../components/MovieModal';
+import { catalogAPI } from '../services/api';
 import './Cinema.css';
 
 interface CinemaShowtime {
@@ -24,6 +26,7 @@ interface CinemaFilm {
     genres: string[];
     year: number | null;
     duration: number | null;
+    actors?: string;
     cinemas: CinemaInfo[];
     province: string;
 }
@@ -40,6 +43,7 @@ export function Cinema() {
     const [province, setProvince] = useState<string>('');
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    const [isWatchedModalOpen, setIsWatchedModalOpen] = useState(false);
 
     useEffect(() => {
         fetchCinemaFilms();
@@ -68,6 +72,33 @@ export function Cinema() {
             setError('Errore di connessione');
         } finally {
             setLoading(false);
+        }
+    };
+
+    const handleAddToWatched = async (rating: number, comment: string) => {
+        if (!selectedFilm) return;
+
+        try {
+            await catalogAPI.addOrUpdateMovie({
+                name: selectedFilm.title,
+                year: selectedFilm.year || new Date().getFullYear(),
+                rating: rating,
+                comment: comment,
+                poster_url: selectedFilm.poster
+            });
+
+            // Rimuovi il film dalla lista locale poiché ora è visto
+            const updatedFilms = films.filter(f => f.id !== selectedFilm.id);
+            setFilms(updatedFilms);
+            if (updatedFilms.length > 0) {
+                setSelectedFilm(updatedFilms[0]);
+            } else {
+                setSelectedFilm(null);
+            }
+            setIsWatchedModalOpen(false);
+        } catch (error) {
+            console.error("Errore salvataggio film visto:", error);
+            throw error;
         }
     };
 
@@ -113,6 +144,9 @@ export function Cinema() {
                                     </div>
                                 </div>
                             )}
+                            <button className="btn-watched-under-poster" onClick={() => setIsWatchedModalOpen(true)}>
+                                Film già visto
+                            </button>
                         </div>
 
                         <div className="featured-info">
@@ -120,11 +154,18 @@ export function Cinema() {
                             {selectedFilm.original_title && selectedFilm.original_title !== selectedFilm.title && (
                                 <p className="original-title">({selectedFilm.original_title})</p>
                             )}
-                            <p className="movie-meta">
-                                {selectedFilm.year && `${selectedFilm.year} • `}
-                                {selectedFilm.director && `🎬 ${selectedFilm.director}`}
-                                {selectedFilm.duration && ` • ${selectedFilm.duration} min`}
-                            </p>
+                            <div className="movie-extra-info">
+                                {selectedFilm.director && (
+                                    <p className="director-info">
+                                        <strong>Regia:</strong> {selectedFilm.director}
+                                    </p>
+                                )}
+                                {selectedFilm.actors && (
+                                    <p className="cast-info">
+                                        <strong>Cast:</strong> {selectedFilm.actors}
+                                    </p>
+                                )}
+                            </div>
 
                             {selectedFilm.genres.length > 0 && (
                                 <div className="genres-row">
@@ -195,6 +236,23 @@ export function Cinema() {
                     </div>
                 </div>
             </div>
+
+            {isWatchedModalOpen && selectedFilm && (
+                <MovieModal
+                    movie={{
+                        name: selectedFilm.title,
+                        year: selectedFilm.year || new Date().getFullYear(),
+                        poster_url: selectedFilm.poster,
+                        description: selectedFilm.description,
+                        director: selectedFilm.director,
+                        actors: selectedFilm.actors,
+                        genres: selectedFilm.genres
+                    } as any}
+                    mode="edit"
+                    onClose={() => setIsWatchedModalOpen(false)}
+                    onSave={handleAddToWatched}
+                />
+            )}
         </div>
     );
 }

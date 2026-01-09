@@ -11,7 +11,7 @@
   --border-radius-lg: 16px;
   --transition-fast: 0.2s ease;
   --transition-medium: 0.3s ease;
-  
+
   /* Glassmorphism */
   --glass-bg: rgba(255, 255, 255, 0.05);
   --glass-border: rgba(255, 255, 255, 0.1);
@@ -142,4 +142,22 @@
   --border-color: #1e4976;
   --success: #4caf50;
   --warning: #FFD700;
+}
+
+/* ============================================
+   DISNEY+ THEME - Cinema (Enhanced)
+   ============================================ */
+[data-theme="disney"] {
+  --bg-primary: #1a1d29;
+  --bg-secondary: #0b1a3d;
+  --bg-card: #282c3f;
+  --accent-primary: #00bbff;
+  --accent-secondary: #ffffff;
+  --accent-glow: rgba(0, 187, 255, 0.2);
+  --text-primary: #f9f9f9;
+  --text-secondary: #a8a9ad;
+  --text-muted: #8e8e93;
+  --border-color: #31333e;
+  --success: #00d282;
+  --warning: #f9d84a;
 }

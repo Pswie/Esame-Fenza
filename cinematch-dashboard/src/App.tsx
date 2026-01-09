@@ -17,7 +17,7 @@ const routeThemes: Record<string, string> = {
   '/dashboard': 'netflix',
   '/catalogo': 'fox',
   '/recommendations': 'a24',
-  '/cinema': 'warner',
+  '/cinema': 'disney',
   '/sentiment': 'paramount',
   '/mood': 'lionsgate',
   '/predictions': 'universal'

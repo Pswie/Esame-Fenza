@@ -6,6 +6,7 @@
     display: grid;
     grid-template-columns: 1fr 350px;
     gap: 32px;
+    align-items: flex-start;
 }
 
 @media (max-width: 1024px) {
@@ -18,10 +19,24 @@
     display: grid;
     grid-template-columns: 300px 1fr;
     gap: 32px;
-    background: var(--bg-card);
-    border: 1px solid var(--border-color);
+    background: radial-gradient(circle at top right, #0063e522, var(--bg-primary));
+    border: 1px solid rgba(0, 99, 229, 0.3);
+    box-shadow: 0 10px 50px rgba(0, 0, 0, 0.6), 0 0 30px rgba(0, 99, 229, 0.1);
     border-radius: var(--border-radius-lg);
-    padding: 24px;
+    padding: 32px;
+    position: relative;
+    overflow: hidden;
+}
+
+.featured-movie::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 4px;
+    background: linear-gradient(90deg, var(--accent-primary), var(--accent-secondary));
+    opacity: 0.6;
 }
 
 @media (max-width: 768px) {
@@ -31,9 +46,15 @@
 }
 
 .featured-poster {
-    position: relative;
+    position: sticky;
+    top: 32px;
     border-radius: var(--border-radius-md);
     overflow: hidden;
+    height: fit-content;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
+    background: var(--bg-card);
+    display: flex;
+    flex-direction: column;
 }
 
 .featured-poster img {
@@ -48,7 +69,7 @@
     left: 0;
     right: 0;
     padding: 16px;
-    background: linear-gradient(transparent, rgba(0, 0, 0, 0.8));
+    background: transparent;
 }
 
 .rating-badge {
@@ -87,6 +108,27 @@
 .movie-meta {
     color: var(--text-secondary);
     font-size: 1rem;
+}
+
+.movie-extra-info {
+    margin: 8px 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 0.95rem;
+}
+
+.director-info,
+.cast-info {
+    margin: 0;
+    color: var(--text-secondary);
+    line-height: 1.4;
+}
+
+.director-info strong,
+.cast-info strong {
+    color: var(--accent-primary);
+    margin-right: 4px;
 }
 
 .genres-row {
@@ -145,29 +187,47 @@
     text-align: center;
 }
 
-.book-btn {
-    padding: 14px 28px;
-    background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+
+
+.btn-watched-under-poster {
+    width: 100%;
+    padding: 16px;
+    background: var(--accent-primary);
     border: none;
-    border-radius: var(--border-radius-sm);
-    color: white;
-    font-size: 1.1rem;
+    color: #fff;
     font-weight: 700;
+    font-size: 0.95rem;
     cursor: pointer;
-    transition: all var(--transition-fast);
-    margin-top: auto;
+    transition: all 0.3s ease;
+    text-transform: uppercase;
+    letter-spacing: 1px;
 }
 
-.book-btn:hover {
-    transform: translateY(-3px);
-    box-shadow: 0 10px 30px var(--accent-glow);
+.btn-watched-under-poster:hover {
+    background: var(--accent-secondary);
+    color: #000;
 }
+
+
 
 .other-movies {
     background: var(--bg-card);
     border: 1px solid var(--border-color);
     border-radius: var(--border-radius-lg);
     padding: 20px;
+    position: sticky;
+    top: 24px;
+    max-height: calc(100vh - 120px);
+    overflow-y: auto;
+}
+
+.other-movies::-webkit-scrollbar {
+    width: 6px;
+}
+
+.other-movies::-webkit-scrollbar-thumb {
+    background: var(--border-color);
+    border-radius: 10px;
 }
 
 .other-movies h3 {
@@ -198,8 +258,8 @@
 }
 
 .movie-list-item.active {
-    border-color: var(--accent-secondary);
-    background: rgba(197, 165, 114, 0.1);
+    border-color: var(--accent-primary);
+    background: linear-gradient(90deg, rgba(0, 114, 210, 0.1), transparent);
 }
 
 .list-poster {
@@ -286,6 +346,7 @@
     color: var(--text-secondary);
     display: -webkit-box;
     -webkit-line-clamp: 4;
+    line-clamp: 4;
     -webkit-box-orient: vertical;
     overflow: hidden;
 }
@@ -317,9 +378,9 @@
 }
 
 .cinema-name {
-    font-weight: 600;
-    font-size: 1rem;
-    color: var(--accent-secondary);
+    font-weight: 700;
+    font-size: 1.1rem;
+    color: var(--text-primary);
 }
 
 .cinema-address {
@@ -349,7 +410,7 @@
 
 .showtime-btn .sala {
     font-size: 0.7rem;
-    opacity: 0.6;
+    color: var(--text-muted);
 }
 
 /* Cinemas Count Badge */
