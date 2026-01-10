@@ -58,6 +58,29 @@ activity_collection = db.activity_log
 # URL immagine stock di fallback
 STOCK_POSTER_URL = "https://via.placeholder.com/500x750/1a1a2e/e50914?text=No+Poster"
 
+def normalize_title(text: str) -> str:
+    """Rimuove accenti e caratteri speciali per matching/ricerca."""
+    if not text: return ""
+    # Normalizza in NFD (decomposizione) e rimuove i caratteri non-spacing mark (accenti)
+    normalized = unicodedata.normalize('NFD', text)
+    result = "".join([c for c in normalized if not unicodedata.combining(c)])
+    
+    # Mappa caratteri speciali comuni che non vengono decomposti
+    special_chars = {
+        'ā': 'a', 'ē': 'e', 'ī': 'i', 'ō': 'o', 'ū': 'u',
+        'Ā': 'A', 'Ē': 'E', 'Ī': 'I', 'Ō': 'O', 'Ū': 'U',
+        'ł': 'l', 'Ł': 'L', 'ø': 'o', 'Ø': 'O', 'æ': 'ae', 'Æ': 'AE',
+        'œ': 'oe', 'Œ': 'OE', 'ß': 'ss', 'đ': 'd', 'Đ': 'D',
+        'ñ': 'n', 'Ñ': 'N', 'ç': 'c', 'Ç': 'C'
+    }
+    for char, replacement in special_chars.items():
+        result = result.replace(char, replacement)
+    
+    # Rimuove tutto ciò che non è alfanumerico o spazio, e normalizza gli spazi
+    result = re.sub(r'[^a-zA-Z0-9\s]', ' ', result)
+    result = " ".join(result.split()).lower()
+    return result
+
 # ============================================
 # MODELS
 # ============================================
@@ -305,10 +328,13 @@ def calculate_advanced_stats(movies: list) -> dict:
     }
     default_color = "#9CA3AF"
     
-    # Raccoglie tutti i titoli per batch lookup
-    titles = [m.get('name', '').lower() for m in movies if m.get('name')]
+    # Raccoglie tutti i titoli normalizzati per batch lookup
+    normalized_titles = set()
+    for m in movies:
+        if m.get('name'):
+            normalized_titles.add(normalize_title(m['name']))
     
-    if not titles:
+    if not normalized_titles:
         return {
             "genre_data": [], "favorite_genre": "Nessuno",
             "total_watch_time_hours": 0, "total_watch_time_minutes": 0,
@@ -316,30 +342,25 @@ def calculate_advanced_stats(movies: list) -> dict:
             "rating_vs_imdb": []
         }
     
-    # Batch lookup nel catalogo
-    import re
-    escaped_titles = [re.escape(t) for t in titles[:500]]
-    regex_pattern = f"^({'|'.join(escaped_titles)})$"
-    
+    # Batch lookup nel catalogo usando normalized_title
     catalog_movies = list(movies_catalog.find(
         {
             "$or": [
-                {"title": {"$regex": regex_pattern, "$options": "i"}},
-                {"original_title": {"$regex": regex_pattern, "$options": "i"}}
+                {"normalized_title": {"$in": list(normalized_titles)}},
+                {"normalized_original_title": {"$in": list(normalized_titles)}}
             ]
         },
-        {"title": 1, "original_title": 1, "genres": 1, "duration": 1, "director": 1, "actors": 1, "avg_vote": 1}
+        {"title": 1, "original_title": 1, "normalized_title": 1, "normalized_original_title": 1, 
+         "genres": 1, "duration": 1, "director": 1, "actors": 1, "avg_vote": 1}
     ))
     
-    # Crea mapping titolo -> dati catalogo
+    # Crea mapping normalized_title -> dati catalogo
     title_data = {}
     for cm in catalog_movies:
-        # Map primary title
-        if cm.get('title'):
-            title_data[cm['title'].lower()] = cm
-        # Map original title too
-        if cm.get('original_title'):
-             title_data[cm['original_title'].lower()] = cm
+        if cm.get('normalized_title'):
+            title_data[cm['normalized_title']] = cm
+        if cm.get('normalized_original_title'):
+             title_data[cm['normalized_original_title']] = cm
     
     # Inizializza contatori
     genre_counter = Counter()
@@ -353,9 +374,16 @@ def calculate_advanced_stats(movies: list) -> dict:
     
     # Processa ogni film dell'utente
     for movie in movies:
-        title = movie.get('name', '').lower()
+        title = movie.get('name', '')
+        norm_title = normalize_title(title)
         user_rating = movie.get('rating', 0)
-        catalog_info = title_data.get(title, {})
+        
+        catalog_info = title_data.get(norm_title, {})
+        
+        # Se non trovato col titolo normalizzato, prova lookup originale (fallback)
+        if not catalog_info:
+            # Fallback (logica originale lower case se necessario, ma normalized dovrebbe coprire tutto)
+             pass
         
         # Generi
         for genre in catalog_info.get('genres', []):
@@ -600,29 +628,6 @@ async def get_current_user(current_user_id: str = Depends(get_current_user_id)):
 # Collection per showtimes cinema
 # usiamo sempre db (cinematch_db) coerentemente
 showtimes_collection = db["showtimes"]
-
-def normalize_title(text: str) -> str:
-    """Rimuove accenti e caratteri speciali per matching/ricerca."""
-    if not text: return ""
-    # Normalizza in NFD (decomposizione) e rimuove i caratteri non-spacing mark (accenti)
-    normalized = unicodedata.normalize('NFD', text)
-    result = "".join([c for c in normalized if not unicodedata.combining(c)])
-    
-    # Mappa caratteri speciali comuni che non vengono decomposti
-    special_chars = {
-        'ā': 'a', 'ē': 'e', 'ī': 'i', 'ō': 'o', 'ū': 'u',
-        'Ā': 'A', 'Ē': 'E', 'Ī': 'I', 'Ō': 'O', 'Ū': 'U',
-        'ł': 'l', 'Ł': 'L', 'ø': 'o', 'Ø': 'O', 'æ': 'ae', 'Æ': 'AE',
-        'œ': 'oe', 'Œ': 'OE', 'ß': 'ss', 'đ': 'd', 'Đ': 'D',
-        'ñ': 'n', 'Ñ': 'N', 'ç': 'c', 'Ç': 'C'
-    }
-    for char, replacement in special_chars.items():
-        result = result.replace(char, replacement)
-    
-    # Rimuove tutto ciò che non è alfanumerico o spazio, e normalizza gli spazi
-    result = re.sub(r'[^a-zA-Z0-9\s]', ' ', result)
-    result = " ".join(result.split()).lower()
-    return result
 
 @app.get("/cinema/films")
 async def get_cinema_films(current_user_id: str = Depends(get_current_user_id)):
@@ -1526,6 +1531,10 @@ async def add_movie_to_collection(
                 "updated_at": datetime.utcnow().isoformat()
             }}
         )
+        
+        # Ricalcola le statistiche e aggiorna conteggi
+        await recalculate_user_stats(current_user_id)
+        
         return {"status": "success", "message": "Film aggiornato"}
     
     # Crea documento film
@@ -1542,6 +1551,10 @@ async def add_movie_to_collection(
     }
     
     movies_collection.insert_one(new_movie)
+    
+    # Ricalcola le statistiche e aggiorna conteggi
+    await recalculate_user_stats(current_user_id)
+    
     return {"status": "success", "message": "Film aggiunto"}
 
 
@@ -1564,6 +1577,9 @@ async def update_user_movie(
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Film non trovato nei tuoi visti")
         
+    # Ricalcola le statistiche e aggiorna conteggi
+    await recalculate_user_stats(current_user_id)
+    
     return {"status": "success"}
 
 
@@ -1619,58 +1635,49 @@ async def update_movie_rating(
 
 
 async def recalculate_user_stats(user_id: str):
-    """Ricalcola le statistiche dell'utente."""
+    """Ricalcola le statistiche dell'utente (Complete)."""
     movies = list(movies_collection.find({"user_id": user_id}))
     
     if not movies:
         stats_collection.delete_one({"user_id": user_id})
+        # Reset count
+        users_collection.update_one(
+            {"user_id": user_id},
+            {"$set": {"movies_count": 0, "has_data": False}}
+        )
         return
     
-    # Calcola statistiche
-    total = len(movies)
-    if total == 0:
-        return
-        
-    ratings = [m["rating"] for m in movies]
-    avg_rating = sum(ratings) / total
-    
-    rating_dist = {}
-    for r in range(1, 6):
-        rating_dist[str(r)] = len([m for m in movies if m["rating"] == r])
-    
-    top_rated = sorted([m for m in movies if m["rating"] >= 4], key=lambda x: -x["rating"])[:10]
-    top_rated_list = [{"Name": m["name"], "Year": m["year"], "Rating": m["rating"]} for m in top_rated]
-    
-    # Ricalcola anche statistiche avanzate
-    advanced = calculate_advanced_stats(movies)
-    
-    # Aggiorna statistiche
-    stats_collection.update_one(
+    # 1. Aggiorna movies_count utente
+    users_collection.update_one(
         {"user_id": user_id},
         {"$set": {
-            "total_watched": total,
-            "avg_rating": round(avg_rating, 2),
-            "rating_distribution": rating_dist,
-            "top_rated_movies": top_rated_list,
-            "total_5_stars": rating_dist.get("5", 0),
-            "total_4_stars": rating_dist.get("4", 0),
-            "total_3_stars": rating_dist.get("3", 0),
-            "total_2_stars": rating_dist.get("2", 0),
-            "total_1_stars": rating_dist.get("1", 0),
-            "genre_data": advanced.get("genre_data", []),
-            "favorite_genre": advanced.get("favorite_genre", "Nessuno"),
-            "watch_time_hours": advanced.get("total_watch_time_hours", 0),
-            "watch_time_minutes": advanced.get("total_watch_time_minutes", 0),
-            "avg_duration": advanced.get("avg_duration", 0),
-            "top_directors": advanced.get("top_directors", []),
-            "top_actors": advanced.get("top_actors", []),
-            "best_rated_directors": advanced.get("best_rated_directors", []),
-            "best_rated_actors": advanced.get("best_rated_actors", []),
-            "rating_vs_imdb": advanced.get("rating_vs_imdb", []),
-            "total_unique_directors": advanced.get("total_unique_directors", 0),
-            "total_unique_actors": advanced.get("total_unique_actors", 0),
-            "updated_at": datetime.utcnow().isoformat()
-        }},
+            "movies_count": len(movies),
+            "has_data": True,
+            "data_updated_at": datetime.utcnow().isoformat()
+        }}
+    )
+    
+    # 2. Ricostruisci il DataFrame per riutilizzare calculate_stats
+    data_for_df = []
+    for m in movies:
+        data_for_df.append({
+            "Name": m["name"],
+            "Year": m["year"],
+            "Rating": m["rating"],
+            "Date": m.get("date") # Importante: recupera la data se presente
+        })
+    
+    df = pd.DataFrame(data_for_df)
+    
+    # 3. Calcola tutte le statistiche (base + avanzate)
+    stats = calculate_stats(df, movies)
+    stats["user_id"] = user_id
+    stats["last_update"] = datetime.utcnow().isoformat()
+    
+    # 4. Aggiorna statistiche
+    stats_collection.update_one(
+        {"user_id": user_id},
+        {"$set": stats},
         upsert=True
     )
 
