@@ -38,7 +38,7 @@ services:
 
   # SPARK MASTER
   spark-master:
-    image: bitnami/spark:latest
+    image: apache/spark:latest
     container_name: spark_master
     environment:
       - SPARK_MODE=master
@@ -52,7 +52,7 @@ services:
 
   # SPARK WORKER
   spark-worker:
-    image: bitnami/spark:latest
+    image: apache/spark:latest
     container_name: spark_worker
     environment:
       - SPARK_MODE=worker
