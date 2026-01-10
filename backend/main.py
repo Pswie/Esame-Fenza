@@ -351,16 +351,16 @@ def calculate_advanced_stats(movies: list) -> dict:
             ]
         },
         {"title": 1, "original_title": 1, "normalized_title": 1, "normalized_original_title": 1, 
-         "genres": 1, "duration": 1, "director": 1, "actors": 1, "avg_vote": 1}
+         "genres": 1, "duration": 1, "director": 1, "actors": 1, "avg_vote": 1, "year": 1}
     ))
     
-    # Crea mapping normalized_title -> dati catalogo
-    title_data = {}
+    # Crea mapping normalized_title -> LISTA dati catalogo (per gestire duplicati)
+    title_data = defaultdict(list)
     for cm in catalog_movies:
         if cm.get('normalized_title'):
-            title_data[cm['normalized_title']] = cm
+            title_data[cm['normalized_title']].append(cm)
         if cm.get('normalized_original_title'):
-             title_data[cm['normalized_original_title']] = cm
+             title_data[cm['normalized_original_title']].append(cm)
     
     # Inizializza contatori
     genre_counter = Counter()
@@ -375,15 +375,44 @@ def calculate_advanced_stats(movies: list) -> dict:
     # Processa ogni film dell'utente
     for movie in movies:
         title = movie.get('name', '')
+        year = movie.get('year')
         norm_title = normalize_title(title)
         user_rating = movie.get('rating', 0)
         
-        catalog_info = title_data.get(norm_title, {})
+        candidates = title_data.get(norm_title, [])
+        catalog_info = {}
         
-        # Se non trovato col titolo normalizzato, prova lookup originale (fallback)
-        if not catalog_info:
-            # Fallback (logica originale lower case se necessario, ma normalized dovrebbe coprire tutto)
-             pass
+        if candidates:
+            if len(candidates) == 1:
+                catalog_info = candidates[0]
+            else:
+                # Euristiche per scegliere il candidato migliore se ce ne sono più di uno
+                # Ordiniamo i candidati per qualità:
+                # 1. Lunghezza stringa attori (più attori = dati più completi)
+                # 2. Presenza regista
+                candidates.sort(
+                    key=lambda x: (len(x.get('actors', '')) if x.get('actors') else 0, 1 if x.get('director') else 0), 
+                    reverse=True
+                )
+                
+                # 1. Matching anno esatto
+                if year:
+                    for cand in candidates:
+                        if cand.get('year') == year:
+                            catalog_info = cand
+                            break
+                    
+                    # 2. Matching anno +- 1
+                    if not catalog_info:
+                        for cand in candidates:
+                            c_year = cand.get('year')
+                            if c_year and isinstance(c_year, int) and abs(c_year - year) <= 1:
+                                catalog_info = cand
+                                break
+                
+                # 3. Fallback: primo della lista (già ordinato per qualità)
+                if not catalog_info:
+                    catalog_info = candidates[0]
         
         # Generi
         for genre in catalog_info.get('genres', []):
@@ -406,16 +435,14 @@ def calculate_advanced_stats(movies: list) -> dict:
                     director_counter[d] += 1
                     director_ratings[d].append(user_rating)
         
-        # Attori (prendi i primi 3 per film)
+        # Attori (senza limiti per includere tutto il cast)
         actors = catalog_info.get('actors', '')
         if actors:
-            for i, actor in enumerate(actors.split(',')):
-                if i >= 3:  # Solo i primi 3 attori per film
-                    break
-                actor = actor.strip()
-                if actor:
-                    actor_counter[actor] += 1
-                    actor_ratings[actor].append(user_rating)
+            # Splitting robusto (virgola o altri separatori comuni se ci sono sporcizie)
+            actor_list = [a.strip() for a in actors.split(',') if a.strip()]
+            for actor in actor_list:
+                actor_counter[actor] += 1
+                actor_ratings[actor].append(user_rating)
         
         # Rating vs IMDb
         imdb_rating = catalog_info.get('avg_vote')
@@ -1083,6 +1110,11 @@ async def get_user_stats(current_user_id: str = Depends(get_current_user_id)):
     
     # Se mancano le nuove statistiche o sono incomplete (es. meno di 40 per i best_rated), ricalcola tutto
     needs_recalc = False
+    
+    # Controllo versione statistiche
+    if stats.get("stats_version", "") != "2.2":
+        needs_recalc = True
+        
     if "best_rated_directors" not in stats or "best_rated_actors" not in stats:
         needs_recalc = True
     elif len(stats.get("best_rated_directors", [])) < 30: # Forza ricalcolo se abbiamo ancora le vecchie stats "corte"
@@ -1096,6 +1128,7 @@ async def get_user_stats(current_user_id: str = Depends(get_current_user_id)):
         
         # Aggiorna le stats con i nuovi dati
         stats.update({
+            "stats_version": "2.2", # Aggiorna versione
             "genre_data": advanced_stats["genre_data"],
             "favorite_genre": advanced_stats["favorite_genre"],
             "watch_time_hours": advanced_stats["total_watch_time_hours"],
@@ -1134,6 +1167,8 @@ async def get_movies(current_user_id: str = Depends(get_current_user_id)):
 @app.get("/movies/person")
 async def get_movies_by_person(name: str, type: str, current_user_id: str = Depends(get_current_user_id)):
     """Ottiene i film dell'utente filtrati per regista o attore."""
+    from collections import defaultdict # Import necessario
+    
     user_movies = list(movies_collection.find({"user_id": current_user_id}))
     titles = [m.get('name') for m in user_movies]
     
@@ -1145,16 +1180,53 @@ async def get_movies_by_person(name: str, type: str, current_user_id: str = Depe
         field: {"$regex": re.escape(name), "$options": "i"}
     }, {"title": 1, "original_title": 1, "genres": 1, "poster_url": 1, "poster_path": 1, "year": 1, "avg_vote": 1, "director": 1, "actors": 1, "description": 1, "duration": 1}))
     
-    catalog_map = {}
+    # Mappa: titolo -> Lista di candidati (per gestire collisioni)
+    catalog_map = defaultdict(list)
     for cm in catalog_matches:
-        if cm.get('title'): catalog_map[cm['title'].lower()] = cm
-        if cm.get('original_title'): catalog_map[cm['original_title'].lower()] = cm
+        if cm.get('title'): catalog_map[cm['title'].lower()].append(cm)
+        if cm.get('original_title'): catalog_map[cm['original_title'].lower()].append(cm)
         
     results = []
     for m in user_movies:
         title = m.get('name', '').lower()
-        if title in catalog_map:
-            cat_info = catalog_map[title]
+        year = m.get('year')
+        
+        candidates = catalog_map.get(title)
+        if candidates:
+            # Trova il miglior candidato
+            match = None
+            
+            # 1. Anno esatto
+            if year:
+                for cand in candidates:
+                    if cand.get('year') == year:
+                        match = cand
+                        break
+            
+            # 2. Anno tolleranza +/- 1
+            if not match and year:
+                for cand in candidates:
+                    if cand.get('year') and isinstance(cand['year'], int) and abs(cand['year'] - year) <= 1:
+                        match = cand
+                        break
+                        
+            # 3. Se non c'è anno nel film utente o nessuna corrispondenza trovata, 
+            # MA il titolo corrisponde a un film di questo attore...
+            # Qui bisogna stare attenti. Se l'utente ha "Passengers" (2016) e l'attore è Anne Hathaway (Passengers 2008), 
+            # NON dovremmo matchare se l'anno è diverso! 
+            
+            # Se abbiamo trovato un match di anno, bene.
+            # Se NON abbiamo trovato match di anno, e l'anno era specificato, scartiamo (è un omonimo sbagliato).
+            if match:
+                cat_info = match
+            elif year is None:
+                 # Se l'utente non ha messo l'anno, assumiamo sia quello giusto (fallback)
+                 cat_info = candidates[0]
+            else:
+                # Anno specificato ma diverso -> Omonimo, non aggiungere.
+                continue
+
+            # Priorità al poster_url (stessa logica del catalogo), poi poster_path TMDB
             
             # Priorità al poster_url (stessa logica del catalogo), poi poster_path TMDB
             poster = cat_info.get('poster_url')
