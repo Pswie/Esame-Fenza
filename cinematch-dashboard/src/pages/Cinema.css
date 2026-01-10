@@ -454,3 +454,9 @@
         opacity: 0.6;
     }
 }
+
+/* Sync Badge - different color */
+.sync-badge {
+    background: linear-gradient(90deg, #00b894, #0984e3) !important;
+    margin-left: 12px;
+}

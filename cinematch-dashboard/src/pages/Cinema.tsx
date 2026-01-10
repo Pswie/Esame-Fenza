@@ -65,6 +65,8 @@ export function Cinema() {
     const [isRefreshing, setIsRefreshing] = useState(false);
     const [refreshProgress, setRefreshProgress] = useState(0);
     const [refreshProvince, setRefreshProvince] = useState('');
+    const [isSyncing, setIsSyncing] = useState(false);
+    const [syncFilm, setSyncFilm] = useState('');
 
     useEffect(() => {
         fetchCinemaFilms();
@@ -82,9 +84,16 @@ export function Cinema() {
                     setRefreshProgress(data.percentage);
                     setRefreshProvince(data.current_province);
 
-                    // If completed, refresh the films list
-                    if (data.status === 'completed') {
+                    // Check sync status
+                    if (data.sync) {
+                        setIsSyncing(data.sync.status === 'running');
+                        setSyncFilm(data.sync.current_film || '');
+                    }
+
+                    // If both completed, refresh the films list
+                    if (data.status === 'completed' && (!data.sync || data.sync.status !== 'running')) {
                         setIsRefreshing(false);
+                        setIsSyncing(false);
                         setRefreshProgress(0);
                         // Refetch films after a short delay
                         setTimeout(() => fetchCinemaFilms(), 1000);
@@ -99,7 +108,7 @@ export function Cinema() {
         const interval = setInterval(pollProgress, 2000); // Poll every 2 seconds
 
         return () => clearInterval(interval);
-    }, [isRefreshing]);
+    }, [isRefreshing, isSyncing]);
 
     const fetchCinemaFilms = async () => {
         try {
@@ -187,6 +196,11 @@ export function Cinema() {
                     {isRefreshing && (
                         <span className="refreshing-badge">
                             🔄 Aggiornamento in corso {refreshProgress}%{refreshProvince && ` - ${refreshProvince}`}
+                        </span>
+                    )}
+                    {isSyncing && (
+                        <span className="refreshing-badge sync-badge">
+                            🎬 Recupero film{syncFilm && `: ${syncFilm}`}
                         </span>
                     )}
                 </p>

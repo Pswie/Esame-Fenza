@@ -175,18 +175,8 @@ async def startup_event():
     from scrape_comingsoon import main as run_cinema_scraper
     from cinema_film_sync import sync_films_to_catalog
     
-    def scheduled_cinema_scraper():
-        """Wrapper per lo scheduler che controlla se uno scraper è già in esecuzione."""
-        scraper_status = db["scraper_progress"].find_one({"_id": "cinema_scraper"})
-        is_running = scraper_status and scraper_status.get("status") in ["scraping", "starting", "saving"]
-        if is_running:
-            print("⏭️ [Scheduler] Scraper già in esecuzione, salto questa esecuzione programmata.")
-            return
-        print("🕐 [Scheduler] Avvio scraper programmato a mezzanotte...")
-        run_cinema_scraper()
-    
-    def scheduled_cinema_sync():
-        """Wrapper per sync_films_to_catalog con controllo anti-duplicazione."""
+    def run_cinema_sync_with_lock():
+        """Esegue il sync con lock anti-duplicazione."""
         status = db["scraper_progress"].find_one({"_id": "cinema_sync"})
         is_running = status and status.get("status") == "running"
         if is_running:
@@ -198,21 +188,39 @@ async def startup_event():
                 {"$set": {"status": "running", "updated_at": datetime.utcnow().isoformat()}},
                 upsert=True
             )
-            print("🔄 [Scheduler] Avvio sync cinema al catalogo...")
+            print("🔄 [Cinema] Avvio sync al catalogo...")
             sync_films_to_catalog()
+            print("✅ [Cinema] Sync completato.")
+        except Exception as e:
+            print(f"❌ [Cinema] Errore sync: {e}")
         finally:
             db["scraper_progress"].update_one(
                 {"_id": "cinema_sync"},
                 {"$set": {"status": "idle", "updated_at": datetime.utcnow().isoformat()}}
             )
     
-    # Scraper ComingSoon alle 00:00 (mezzanotte) - con controllo anti-duplicazione
-    scheduler.add_job(scheduled_cinema_scraper, 'cron', hour=0, minute=0, id='cinema_scraper')
-    # Sync film al catalogo alle 00:30 - con controllo anti-duplicazione
-    scheduler.add_job(scheduled_cinema_sync, 'cron', hour=0, minute=30, id='cinema_sync')
+    def scheduled_cinema_scraper():
+        """Wrapper per lo scheduler che esegue scraper + sync in sequenza."""
+        scraper_status = db["scraper_progress"].find_one({"_id": "cinema_scraper"})
+        is_running = scraper_status and scraper_status.get("status") in ["scraping", "starting", "saving"]
+        if is_running:
+            print("⏭️ [Scheduler] Scraper già in esecuzione, salto questa esecuzione programmata.")
+            return
+        
+        print("🕐 [Scheduler] Avvio scraper programmato a mezzanotte...")
+        try:
+            run_cinema_scraper()
+            # Dopo lo scraper, esegui sempre il sync
+            print("🔗 [Scheduler] Scraper completato, avvio sync...")
+            run_cinema_sync_with_lock()
+        except Exception as e:
+            print(f"❌ [Scheduler] Errore durante scraper/sync: {e}")
+    
+    # Scraper + Sync alle 00:00 (mezzanotte) - concatenati
+    scheduler.add_job(scheduled_cinema_scraper, 'cron', hour=0, minute=0, id='cinema_scraper_and_sync')
     
     scheduler.start()
-    print("🕒 Scheduler avviato: Movie Updater ogni 24h + Cinema Scraper a mezzanotte.")
+    print("🕒 Scheduler avviato: Movie Updater ogni 24h + Cinema Scraper+Sync a mezzanotte.")
     
     # Eseguiamo anche un update SUBITO all'avvio in background (con lock)
     import threading
@@ -889,9 +897,14 @@ async def get_cinema_films(background_tasks: BackgroundTasks, current_user_id: s
     user_watched = list(movies_collection.find({"user_id": current_user_id}, {"name": 1}))
     watched_titles = {normalize_title(m['name']) for m in user_watched}
     
-    # Query showtimes per la provincia (prendiamo fino a 50 per avere margine dopo il filtraggio)
+    # Query showtimes per la provincia - SOLO quelli aggiornati oggi
+    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    
     showtimes_cursor = showtimes_collection.find(
-        {"province_slug": user_province},
+        {
+            "province_slug": user_province,
+            "updated_at": {"$gte": today_start}  # Solo film aggiornati oggi
+        },
         {"_id": 0}
     ).sort("updated_at", -1).limit(50)
     
@@ -1010,22 +1023,29 @@ scraper_progress_collection = db["scraper_progress"]
 
 @app.get("/cinema/progress")
 async def get_scraper_progress():
-    """Ottiene lo stato di avanzamento dello scraper."""
-    progress = scraper_progress_collection.find_one({"_id": "cinema_scraper"})
-    if progress:
-        return {
-            "percentage": progress.get("percentage", 0),
-            "status": progress.get("status", "idle"),
-            "current_province": progress.get("current_province", ""),
-            "current": progress.get("current", 0),
-            "total": progress.get("total", 0)
-        }
+    """Ottiene lo stato di avanzamento dello scraper e del sync."""
+    # Scraper progress
+    scraper_progress = scraper_progress_collection.find_one({"_id": "cinema_scraper"})
+    # Sync progress
+    sync_progress = scraper_progress_collection.find_one({"_id": "cinema_sync"})
+    
+    scraper_data = {
+        "percentage": scraper_progress.get("percentage", 0) if scraper_progress else 0,
+        "status": scraper_progress.get("status", "idle") if scraper_progress else "idle",
+        "current_province": scraper_progress.get("current_province", "") if scraper_progress else "",
+        "current": scraper_progress.get("current", 0) if scraper_progress else 0,
+        "total": scraper_progress.get("total", 0) if scraper_progress else 0
+    }
+    
+    sync_data = {
+        "status": sync_progress.get("status", "idle") if sync_progress else "idle",
+        "films_added": sync_progress.get("films_added", 0) if sync_progress else 0,
+        "current_film": sync_progress.get("current_film", "") if sync_progress else ""
+    }
+    
     return {
-        "percentage": 0,
-        "status": "idle",
-        "current_province": "",
-        "current": 0,
-        "total": 0
+        **scraper_data,
+        "sync": sync_data
     }
 
 
