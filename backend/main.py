@@ -147,26 +147,55 @@ async def startup_event():
     # Avvia scheduler per aggiornamento automatico film (Cinema/Digital 2026+)
     updater = MovieUpdater(MONGO_URL, TMDB_API_KEY)
     
+    def scheduled_movie_updater():
+        """Wrapper per MovieUpdater che controlla se è già in esecuzione."""
+        status = db["scraper_progress"].find_one({"_id": "movie_updater"})
+        is_running = status and status.get("status") == "running"
+        if is_running:
+            print("⏭️ [MovieUpdater] Già in esecuzione, salto.")
+            return
+        try:
+            db["scraper_progress"].update_one(
+                {"_id": "movie_updater"},
+                {"$set": {"status": "running", "updated_at": datetime.utcnow().isoformat()}},
+                upsert=True
+            )
+            updater.fetch_new_releases()
+        finally:
+            db["scraper_progress"].update_one(
+                {"_id": "movie_updater"},
+                {"$set": {"status": "idle", "updated_at": datetime.utcnow().isoformat()}}
+            )
+    
     scheduler = BackgroundScheduler()
-    # Esegue ogni 24 ore
-    scheduler.add_job(updater.fetch_new_releases, 'interval', hours=24)
+    # Esegue ogni 24 ore - con controllo anti-duplicazione
+    scheduler.add_job(scheduled_movie_updater, 'interval', hours=24)
     
     # --- SCHEDULER CINEMA CAMPANIA ---
     from scrape_comingsoon import main as run_cinema_scraper
     from cinema_film_sync import sync_films_to_catalog
     
-    # Scraper ComingSoon alle 00:00 (mezzanotte)
-    scheduler.add_job(run_cinema_scraper, 'cron', hour=0, minute=0, id='cinema_scraper')
+    def scheduled_cinema_scraper():
+        """Wrapper per lo scheduler che controlla se uno scraper è già in esecuzione."""
+        scraper_status = db["scraper_progress"].find_one({"_id": "cinema_scraper"})
+        is_running = scraper_status and scraper_status.get("status") in ["scraping", "starting", "saving"]
+        if is_running:
+            print("⏭️ [Scheduler] Scraper già in esecuzione, salto questa esecuzione programmata.")
+            return
+        print("🕐 [Scheduler] Avvio scraper programmato a mezzanotte...")
+        run_cinema_scraper()
+    
+    # Scraper ComingSoon alle 00:00 (mezzanotte) - con controllo anti-duplicazione
+    scheduler.add_job(scheduled_cinema_scraper, 'cron', hour=0, minute=0, id='cinema_scraper')
     # Sync film al catalogo alle 00:30
     scheduler.add_job(sync_films_to_catalog, 'cron', hour=0, minute=30, id='cinema_sync')
     
     scheduler.start()
     print("🕒 Scheduler avviato: Movie Updater ogni 24h + Cinema Scraper a mezzanotte.")
     
-    # Eseguiamo anche un update SUBITO all'avvio in background
-    # per riempire il buco del 2026 adesso
+    # Eseguiamo anche un update SUBITO all'avvio in background (con lock)
     import threading
-    t = threading.Thread(target=updater.fetch_new_releases)
+    t = threading.Thread(target=scheduled_movie_updater)
     t.start()
     
     # Carica dati CSV se esistono e non sono già stati processati
@@ -701,8 +730,69 @@ async def get_preset_avatars():
 showtimes_collection = db["showtimes"]
 
 @app.get("/cinema/films")
-async def get_cinema_films(current_user_id: str = Depends(get_current_user_id)):
+async def get_cinema_films(background_tasks: BackgroundTasks, current_user_id: str = Depends(get_current_user_id)):
     """Ottiene i film in programmazione nella provincia dell'utente con matching robusto."""
+    
+    # --- FRESHNESS CHECK ---
+    # Get the most recent updated_at from showtimes
+    latest_showtime = showtimes_collection.find_one(
+        {},
+        {"updated_at": 1, "_id": 0},
+        sort=[("updated_at", -1)]
+    )
+    
+    last_update_str = None
+    is_refreshing = False
+    
+    if latest_showtime and latest_showtime.get("updated_at"):
+        last_update_str = latest_showtime["updated_at"]
+        try:
+            # Parse the ISO date string
+            last_update_date = datetime.fromisoformat(last_update_str.replace("Z", "+00:00"))
+            today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            
+            # Check if scraper is already running
+            scraper_status = scraper_progress_collection.find_one({"_id": "cinema_scraper"})
+            is_scraper_running = scraper_status and scraper_status.get("status") in ["scraping", "starting", "saving"]
+            
+            # If data is from before today AND scraper is not already running, trigger a background rescrape
+            if last_update_date.replace(tzinfo=None) < today and not is_scraper_running:
+                print(f"📅 [Cinema] Dati obsoleti ({last_update_date.date()} < {today.date()}), avvio scrape in background...")
+                from scrape_comingsoon import main as run_cinema_scraper
+                from cinema_film_sync import sync_films_to_catalog
+                
+                def refresh_cinema_data():
+                    try:
+                        run_cinema_scraper()
+                        sync_films_to_catalog()
+                        print("✅ [Cinema] Scrape completato in background.")
+                    except Exception as e:
+                        print(f"❌ [Cinema] Errore durante lo scrape: {e}")
+                
+                background_tasks.add_task(refresh_cinema_data)
+                is_refreshing = True
+            elif is_scraper_running:
+                # Scraper is already running, just report it
+                is_refreshing = True
+        except Exception as e:
+            print(f"⚠️ Errore parsing updated_at: {e}")
+    else:
+        # No showtimes at all, trigger scrape
+        print("📅 [Cinema] Nessun dato presente, avvio scrape in background...")
+        from scrape_comingsoon import main as run_cinema_scraper
+        from cinema_film_sync import sync_films_to_catalog
+        
+        def refresh_cinema_data():
+            try:
+                run_cinema_scraper()
+                sync_films_to_catalog()
+                print("✅ [Cinema] Scrape completato in background.")
+            except Exception as e:
+                print(f"❌ [Cinema] Errore durante lo scrape: {e}")
+        
+        background_tasks.add_task(refresh_cinema_data)
+        is_refreshing = True
+        last_update_str = datetime.now().isoformat()
     
     def find_in_catalog(title: str, original_title: str = None) -> dict:
         """Cerca un film nel catalogo con logica robusta usando i campi indicizzati."""
@@ -888,7 +978,33 @@ async def get_cinema_films(current_user_id: str = Depends(get_current_user_id)):
     return {
         "province": user_province.capitalize(),
         "films": films,
-        "total": len(films)
+        "total": len(films),
+        "last_update": last_update_str,
+        "is_refreshing": is_refreshing
+    }
+
+
+# Collection per il progresso dello scraper
+scraper_progress_collection = db["scraper_progress"]
+
+@app.get("/cinema/progress")
+async def get_scraper_progress():
+    """Ottiene lo stato di avanzamento dello scraper."""
+    progress = scraper_progress_collection.find_one({"_id": "cinema_scraper"})
+    if progress:
+        return {
+            "percentage": progress.get("percentage", 0),
+            "status": progress.get("status", "idle"),
+            "current_province": progress.get("current_province", ""),
+            "current": progress.get("current", 0),
+            "total": progress.get("total", 0)
+        }
+    return {
+        "percentage": 0,
+        "status": "idle",
+        "current_province": "",
+        "current": 0,
+        "total": 0
     }
 
 

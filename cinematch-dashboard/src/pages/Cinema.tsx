@@ -35,6 +35,23 @@ interface CinemaResponse {
     province: string;
     films: CinemaFilm[];
     total: number;
+    last_update: string | null;
+    is_refreshing: boolean;
+}
+
+// Helper to format date in Italian
+function formatDateItalian(isoDate: string | null): string {
+    if (!isoDate) return 'Data non disponibile';
+    try {
+        const date = new Date(isoDate);
+        const months = [
+            'Gennaio', 'Febbraio', 'Marzo', 'Aprile', 'Maggio', 'Giugno',
+            'Luglio', 'Agosto', 'Settembre', 'Ottobre', 'Novembre', 'Dicembre'
+        ];
+        return `${date.getDate()} ${months[date.getMonth()]} ${date.getFullYear()}`;
+    } catch {
+        return 'Data non disponibile';
+    }
 }
 
 export function Cinema() {
@@ -44,10 +61,45 @@ export function Cinema() {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [isWatchedModalOpen, setIsWatchedModalOpen] = useState(false);
+    const [lastUpdate, setLastUpdate] = useState<string | null>(null);
+    const [isRefreshing, setIsRefreshing] = useState(false);
+    const [refreshProgress, setRefreshProgress] = useState(0);
+    const [refreshProvince, setRefreshProvince] = useState('');
 
     useEffect(() => {
         fetchCinemaFilms();
     }, []);
+
+    // Poll for progress when refreshing
+    useEffect(() => {
+        if (!isRefreshing) return;
+
+        const pollProgress = async () => {
+            try {
+                const response = await fetch('http://localhost:8000/cinema/progress');
+                if (response.ok) {
+                    const data = await response.json();
+                    setRefreshProgress(data.percentage);
+                    setRefreshProvince(data.current_province);
+
+                    // If completed, refresh the films list
+                    if (data.status === 'completed') {
+                        setIsRefreshing(false);
+                        setRefreshProgress(0);
+                        // Refetch films after a short delay
+                        setTimeout(() => fetchCinemaFilms(), 1000);
+                    }
+                }
+            } catch (err) {
+                console.error('Error polling progress:', err);
+            }
+        };
+
+        pollProgress(); // Initial poll
+        const interval = setInterval(pollProgress, 2000); // Poll every 2 seconds
+
+        return () => clearInterval(interval);
+    }, [isRefreshing]);
 
     const fetchCinemaFilms = async () => {
         try {
@@ -62,6 +114,8 @@ export function Cinema() {
                 const data: CinemaResponse = await response.json();
                 setFilms(data.films);
                 setProvince(data.province);
+                setLastUpdate(data.last_update);
+                setIsRefreshing(data.is_refreshing);
                 if (data.films.length > 0) {
                     setSelectedFilm(data.films[0]);
                 }
@@ -128,7 +182,14 @@ export function Cinema() {
         <div className="cinema-page">
             <div className="page-header">
                 <h1>🎭 Al Cinema Ora</h1>
-                <p>Film in programmazione a <strong>{province}</strong></p>
+                <p>
+                    <strong>{formatDateItalian(lastUpdate)}</strong> • Film in programmazione a <strong>{province}</strong>
+                    {isRefreshing && (
+                        <span className="refreshing-badge">
+                            🔄 Aggiornamento in corso {refreshProgress}%{refreshProvince && ` - ${refreshProvince}`}
+                        </span>
+                    )}
+                </p>
             </div>
 
             <div className="cinema-layout">
@@ -137,9 +198,9 @@ export function Cinema() {
                     <div className="featured-movie">
                         <div className="featured-poster-container">
                             <div className="featured-poster">
-                                <img 
-                                    src={selectedFilm.poster} 
-                                    alt={selectedFilm.title} 
+                                <img
+                                    src={selectedFilm.poster}
+                                    alt={selectedFilm.title}
                                     loading="eager"
                                 />
                                 {selectedFilm.rating && (
@@ -224,10 +285,10 @@ export function Cinema() {
                                 className={`movie-list-item ${selectedFilm?.id === film.id ? 'active' : ''}`}
                                 onClick={() => setSelectedFilm(film)}
                             >
-                                <img 
-                                    src={film.poster} 
-                                    alt={film.title} 
-                                    className="list-poster" 
+                                <img
+                                    src={film.poster}
+                                    alt={film.title}
+                                    className="list-poster"
                                     loading="lazy"
                                 />
                                 <div className="list-info">

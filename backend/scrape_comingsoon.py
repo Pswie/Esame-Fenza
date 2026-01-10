@@ -9,9 +9,13 @@ import requests
 from bs4 import BeautifulSoup
 import time
 import re
+import os
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 from pymongo import MongoClient
+
+# MongoDB URL (uses environment variable for Docker compatibility)
+MONGO_URL = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
 
 # Configuration
 BASE_URL = "https://www.comingsoon.it"
@@ -319,7 +323,7 @@ def scrape_province(province: Dict) -> List[Dict]:
 def save_to_mongodb(data: List[Dict]):
     """Salva i dati su MongoDB."""
     try:
-        client = MongoClient("mongodb://localhost:27017/", serverSelectionTimeoutMS=5000)
+        client = MongoClient(MONGO_URL, serverSelectionTimeoutMS=5000)
         db = client["cinematch_db"]
         collection = db["showtimes"]
         
@@ -338,6 +342,50 @@ def save_to_mongodb(data: List[Dict]):
     except Exception as e:
         print(f"❌ Errore MongoDB: {e}")
 
+# Progress tracking collection
+def get_progress_collection():
+    """Returns the progress tracking collection."""
+    client = MongoClient(MONGO_URL, serverSelectionTimeoutMS=5000)
+    return client["cinematch_db"]["scraper_progress"]
+
+def update_progress(current: int, total: int, status: str, province: str = ""):
+    """Updates the scraper progress in MongoDB."""
+    try:
+        collection = get_progress_collection()
+        collection.update_one(
+            {"_id": "cinema_scraper"},
+            {"$set": {
+                "current": current,
+                "total": total,
+                "percentage": round((current / total) * 100) if total > 0 else 0,
+                "status": status,
+                "current_province": province,
+                "updated_at": datetime.now().isoformat()
+            }},
+            upsert=True
+        )
+    except Exception as e:
+        print(f"⚠️ Errore aggiornamento progresso: {e}")
+
+def clear_progress():
+    """Clears the progress when scraping is complete."""
+    try:
+        collection = get_progress_collection()
+        collection.update_one(
+            {"_id": "cinema_scraper"},
+            {"$set": {
+                "current": 0,
+                "total": 0,
+                "percentage": 100,
+                "status": "completed",
+                "current_province": "",
+                "updated_at": datetime.now().isoformat()
+            }},
+            upsert=True
+        )
+    except Exception as e:
+        print(f"⚠️ Errore pulizia progresso: {e}")
+
 
 def main():
     print("=" * 70)
@@ -346,16 +394,29 @@ def main():
     print("=" * 70)
     
     provinces = CAMPANIA_PROVINCES
+    total_provinces = len(provinces)
     print(f"\n🏛️ Campania: {', '.join(p['name'] for p in provinces)}")
+    
+    # Initialize progress
+    update_progress(0, total_provinces, "starting", "")
     
     all_results = []
     
-    for province in provinces:
+    for idx, province in enumerate(provinces):
+        # Update progress
+        update_progress(idx, total_provinces, "scraping", province["name"])
+        
         results = scrape_province(province)
         all_results.extend(results)
         time.sleep(REQUEST_DELAY)
+        
+        # Update progress after completing province
+        update_progress(idx + 1, total_provinces, "scraping", province["name"])
     
     print(f"\n📊 Totale record: {len(all_results)}")
+    
+    # Update progress for saving phase
+    update_progress(total_provinces, total_provinces, "saving", "")
     
     if all_results:
         save_to_mongodb(all_results)
@@ -378,6 +439,9 @@ def main():
             print(f"     {cinema.get('address', '')}")
             for show in cinema.get('showtimes', [])[:3]:
                 print(f"     - {show.get('sala', 'N/A')}: {show['time']} ({show.get('price', 'N/A')})")
+    
+    # Mark as completed
+    clear_progress()
     
     print(f"\n✅ Completato: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
