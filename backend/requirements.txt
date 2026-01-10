@@ -13,3 +13,4 @@ scipy
 bcrypt==4.0.1
 apscheduler
 beautifulsoup4
+pyspark == 3.4.1
