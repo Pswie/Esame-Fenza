@@ -11,7 +11,7 @@ import time
 import re
 import os
 from typing import Dict, List, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta
 from pymongo import MongoClient
 
 # MongoDB URL (uses environment variable for Docker compatibility)
@@ -321,23 +321,62 @@ def scrape_province(province: Dict) -> List[Dict]:
 
 
 def save_to_mongodb(data: List[Dict]):
-    """Salva i dati su MongoDB."""
+    """Salva i dati su MongoDB con schema: Film → Region → Date → Cinema → Showtimes."""
     try:
         client = MongoClient(MONGO_URL, serverSelectionTimeoutMS=5000)
         db = client["cinematch_db"]
         collection = db["showtimes"]
         
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        cutoff_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+        
         for record in data:
+            film_id = record["film_id"]
+            region_slug = record["province_slug"]
+            
+            # Costruisci gli update per ogni cinema
+            update_set = {
+                "film_id": film_id,
+                "film_title": record["film_title"],
+                "film_original_title": record.get("film_original_title", ""),
+                "director": record.get("director", ""),
+                "last_updated": datetime.now().isoformat()
+            }
+            
+            # Struttura: regions.<region>.dates.<date>.cinemas.<cinema> = {info + showtimes}
+            for cinema in record.get("cinemas", []):
+                cinema_name = cinema.get("cinema_name", "Unknown")
+                # Sanitizza il nome del cinema per usarlo come chiave MongoDB
+                cinema_key = cinema_name.replace(".", "_").replace("$", "_")
+                
+                # Path: regions.<region>.dates.<date>.cinemas.<cinema>
+                cinema_path = f"regions.{region_slug}.dates.{today_str}.cinemas.{cinema_key}"
+                update_set[f"{cinema_path}.cinema_name"] = cinema_name
+                update_set[f"{cinema_path}.cinema_url"] = cinema.get("cinema_url", "")
+                update_set[f"{cinema_path}.showtimes"] = cinema.get("showtimes", [])
+            
+            # Upsert: film_id è la chiave unica (un documento per film)
             collection.update_one(
-                {
-                    "province_slug": record["province_slug"],
-                    "film_id": record["film_id"]
-                },
-                {"$set": record},
+                {"film_id": film_id},
+                {"$set": update_set},
                 upsert=True
             )
         
-        print(f"💾 Salvati {len(data)} record su MongoDB")
+        # Pulizia date vecchie (>30 giorni) per tutti i documenti
+        for doc in collection.find({}):
+            if "regions" not in doc:
+                continue
+            
+            unset_fields = {}
+            for region_slug, region_data in doc.get("regions", {}).items():
+                for date_str in region_data.get("dates", {}).keys():
+                    if date_str < cutoff_date:
+                        unset_fields[f"regions.{region_slug}.dates.{date_str}"] = ""
+            
+            if unset_fields:
+                collection.update_one({"_id": doc["_id"]}, {"$unset": unset_fields})
+        
+        print(f"💾 Salvati {len(data)} film su MongoDB (schema gerarchico)")
         client.close()
     except Exception as e:
         print(f"❌ Errore MongoDB: {e}")

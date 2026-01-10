@@ -67,10 +67,46 @@ export function Cinema() {
     const [refreshProvince, setRefreshProvince] = useState('');
     const [isSyncing, setIsSyncing] = useState(false);
     const [syncFilm, setSyncFilm] = useState('');
+    // Date navigation
+    const [selectedDate, setSelectedDate] = useState<string>('');
+    const [availableDates, setAvailableDates] = useState<string[]>([]);
+    const [todayDate, setTodayDate] = useState<string>('');
 
     useEffect(() => {
-        fetchCinemaFilms();
+        // Fetch available dates on mount
+        const fetchDates = async () => {
+            try {
+                const token = localStorage.getItem('token');
+                const response = await fetch('http://localhost:8000/cinema/dates', {
+                    headers: {
+                        'Authorization': `Bearer ${token}`
+                    }
+                });
+                if (response.ok) {
+                    const data = await response.json();
+                    setAvailableDates(data.available_dates || []);
+                    setTodayDate(data.today);
+                    // Start with newest available date (last in array)
+                    const newestDate = data.available_dates?.length > 0
+                        ? data.available_dates[data.available_dates.length - 1]
+                        : data.today;
+                    setSelectedDate(newestDate);
+                }
+            } catch (err) {
+                console.error('Error fetching dates:', err);
+                const today = new Date().toISOString().split('T')[0];
+                setSelectedDate(today);
+                setTodayDate(today);
+            }
+        };
+        fetchDates();
     }, []);
+
+    useEffect(() => {
+        if (selectedDate) {
+            fetchCinemaFilms(selectedDate);
+        }
+    }, [selectedDate]);
 
     // Poll for progress when refreshing
     useEffect(() => {
@@ -110,10 +146,11 @@ export function Cinema() {
         return () => clearInterval(interval);
     }, [isRefreshing, isSyncing]);
 
-    const fetchCinemaFilms = async () => {
+    const fetchCinemaFilms = async (forDate?: string) => {
         try {
             const token = localStorage.getItem('token');
-            const response = await fetch('http://localhost:8000/cinema/films', {
+            const dateParam = forDate ? `?date=${forDate}` : '';
+            const response = await fetch(`http://localhost:8000/cinema/films${dateParam}`, {
                 headers: {
                     'Authorization': `Bearer ${token}`
                 }
@@ -165,6 +202,32 @@ export function Cinema() {
         }
     };
 
+    // Date navigation functions - jump to available dates
+    const currentIndex = availableDates.indexOf(selectedDate);
+
+    const goToPreviousDay = () => {
+        if (currentIndex > 0) {
+            setSelectedDate(availableDates[currentIndex - 1]);
+        }
+    };
+
+    const goToNextDay = () => {
+        if (currentIndex < availableDates.length - 1) {
+            setSelectedDate(availableDates[currentIndex + 1]);
+        }
+    };
+
+    const formatDisplayDate = (dateStr: string) => {
+        if (!dateStr) return '';
+        const date = new Date(dateStr);
+        const options: Intl.DateTimeFormatOptions = { weekday: 'long', day: 'numeric', month: 'long' };
+        return date.toLocaleDateString('it-IT', options);
+    };
+
+    const isToday = selectedDate === todayDate;
+    const canGoPrevious = currentIndex > 0;
+    const canGoNext = currentIndex < availableDates.length - 1;
+
     if (loading) {
         return (
             <div className="cinema-page">
@@ -181,7 +244,28 @@ export function Cinema() {
             <div className="cinema-page">
                 <div className="page-header">
                     <h1>🎭 Al Cinema Ora</h1>
-                    <p>{error || 'Nessun film in programmazione nella tua zona'}</p>
+                    <div className="date-navigation">
+                        <button
+                            className="date-nav-btn"
+                            onClick={goToPreviousDay}
+                            disabled={!canGoPrevious}
+                            title="Giorno precedente"
+                        >
+                            ◀
+                        </button>
+                        <span className="current-date">
+                            {isToday ? 'Oggi' : formatDisplayDate(selectedDate)}
+                        </span>
+                        <button
+                            className="date-nav-btn"
+                            onClick={goToNextDay}
+                            disabled={!canGoNext}
+                            title="Giorno successivo"
+                        >
+                            ▶
+                        </button>
+                    </div>
+                    <p>{error || 'Nessun film in programmazione per questa data'}</p>
                 </div>
             </div>
         );
@@ -191,8 +275,29 @@ export function Cinema() {
         <div className="cinema-page">
             <div className="page-header">
                 <h1>🎭 Al Cinema Ora</h1>
+                <div className="date-navigation">
+                    <button
+                        className="date-nav-btn"
+                        onClick={goToPreviousDay}
+                        disabled={!canGoPrevious}
+                        title="Giorno precedente"
+                    >
+                        ◀
+                    </button>
+                    <span className="current-date">
+                        {isToday ? 'Oggi' : formatDisplayDate(selectedDate)}
+                    </span>
+                    <button
+                        className="date-nav-btn"
+                        onClick={goToNextDay}
+                        disabled={!canGoNext}
+                        title="Giorno successivo"
+                    >
+                        ▶
+                    </button>
+                </div>
                 <p>
-                    <strong>{formatDateItalian(lastUpdate)}</strong> • Film in programmazione a <strong>{province}</strong>
+                    Film in programmazione a <strong>{province}</strong>
                     {isRefreshing && (
                         <span className="refreshing-badge">
                             🔄 Aggiornamento in corso {refreshProgress}%{refreshProvince && ` - ${refreshProvince}`}

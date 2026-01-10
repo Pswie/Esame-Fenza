@@ -758,23 +758,64 @@ async def get_preset_avatars():
 # usiamo sempre db (cinematch_db) coerentemente
 showtimes_collection = db["showtimes"]
 
+@app.get("/cinema/dates")
+async def get_cinema_dates(current_user_id: str = Depends(get_current_user_id)):
+    """Ottiene la lista delle date disponibili che hanno film al cinema per la provincia dell'utente."""
+    # Ottieni la provincia dell'utente
+    user = users_collection.find_one({"user_id": current_user_id})
+    user_province = user.get("province", "napoli") if user else "napoli"
+    if not user_province:
+        user_province = "napoli"
+    user_province = user_province.lower()
+    
+    today = datetime.now().date().isoformat()
+    
+    # Schema: regions.<province>.dates.<date>.cinemas.<cinema>
+    region_key = f"regions.{user_province}"
+    docs = showtimes_collection.find(
+        {region_key: {"$exists": True}},
+        {"regions": 1}
+    )
+    
+    available_dates = set()
+    for doc in docs:
+        region_data = doc.get("regions", {}).get(user_province, {})
+        # Le date sono direttamente sotto regions.<province>.dates
+        dates = region_data.get("dates", {})
+        available_dates.update(dates.keys())
+    
+    # Filtra per non superare oggi e ordina
+    available_dates = sorted([d for d in available_dates if d <= today])
+    
+    return {
+        "available_dates": available_dates,
+        "oldest_date": available_dates[0] if available_dates else today,
+        "newest_date": available_dates[-1] if available_dates else today,
+        "today": today,
+        "province": user_province
+    }
+
 @app.get("/cinema/films")
-async def get_cinema_films(background_tasks: BackgroundTasks, current_user_id: str = Depends(get_current_user_id)):
+async def get_cinema_films(
+    background_tasks: BackgroundTasks, 
+    current_user_id: str = Depends(get_current_user_id),
+    date: str = None  # Optional: YYYY-MM-DD format
+):
     """Ottiene i film in programmazione nella provincia dell'utente con matching robusto."""
     
     # --- FRESHNESS CHECK ---
-    # Get the most recent updated_at from showtimes
+    # Get the most recent last_updated from showtimes (new schema)
     latest_showtime = showtimes_collection.find_one(
         {},
-        {"updated_at": 1, "_id": 0},
-        sort=[("updated_at", -1)]
+        {"last_updated": 1, "_id": 0},
+        sort=[("last_updated", -1)]
     )
     
     last_update_str = None
     is_refreshing = False
     
-    if latest_showtime and latest_showtime.get("updated_at"):
-        last_update_str = latest_showtime["updated_at"]
+    if latest_showtime and latest_showtime.get("last_updated"):
+        last_update_str = latest_showtime["last_updated"]
         try:
             # Parse the ISO date string
             last_update_date = datetime.fromisoformat(last_update_str.replace("Z", "+00:00"))
@@ -897,18 +938,49 @@ async def get_cinema_films(background_tasks: BackgroundTasks, current_user_id: s
     user_watched = list(movies_collection.find({"user_id": current_user_id}, {"name": 1}))
     watched_titles = {normalize_title(m['name']) for m in user_watched}
     
-    # Query showtimes per la provincia - SOLO quelli aggiornati oggi
-    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    # Determina la data selezionata
+    selected_date = date if date else datetime.now().strftime("%Y-%m-%d")
+    
+    # Schema: regions.<province>.dates.<date>.cinemas.<cinema>.showtimes
+    region_key = f"regions.{user_province}"
     
     showtimes_cursor = showtimes_collection.find(
-        {
-            "province_slug": user_province,
-            "updated_at": {"$gte": today_start}  # Solo film aggiornati oggi
-        },
+        {region_key: {"$exists": True}},
         {"_id": 0}
-    ).sort("updated_at", -1).limit(50)
+    ).limit(100)
     
-    showtimes_list = list(showtimes_cursor)
+    # Trasforma i risultati: estrai cinema dalla data selezionata
+    showtimes_list = []
+    for doc in showtimes_cursor:
+        region_data = doc.get("regions", {}).get(user_province, {})
+        dates_data = region_data.get("dates", {})
+        
+        # Controlla se esiste questa data
+        if selected_date not in dates_data:
+            continue
+        
+        date_data = dates_data[selected_date]
+        cinemas_for_date = []
+        
+        for cinema_key, cinema_data in date_data.get("cinemas", {}).items():
+            cinemas_for_date.append({
+                "name": cinema_data.get("cinema_name", cinema_key),
+                "address": "",  # Not available in new schema
+                "showtimes": cinema_data.get("showtimes", [])
+            })
+        
+        # Solo se ci sono cinema per questa data
+        if cinemas_for_date:
+            showtimes_list.append({
+                "film_id": doc.get("film_id"),
+                "film_title": doc.get("film_title"),
+                "film_original_title": doc.get("film_original_title", ""),
+                "director": doc.get("director", ""),
+                "province": user_province.capitalize(),
+                "province_slug": user_province,
+                "cinemas": cinemas_for_date,
+                "updated_at": doc.get("last_updated", "")
+            })
     
     # 1. Filtra per film non visti e raccogli titoli per ricerca batch
     filtered_showtimes = []
