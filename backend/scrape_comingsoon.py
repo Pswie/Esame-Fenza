@@ -442,23 +442,31 @@ def main():
     all_results = []
     
     for idx, province in enumerate(provinces):
-        # Update progress
-        update_progress(idx, total_provinces, "scraping", province["name"])
+        # Update progress start of province
+        update_progress(idx, total_provinces, "scraping", province['name'])
+        
+        # Pass callback to scrape_province to update progress per movie? 
+        # For significantly simpler change, just save after each province.
         
         results = scrape_province(province)
-        all_results.extend(results)
+        
+        # Save IMMEDIATELY after each province
+        if results:
+            print(f"💾 Salvataggio parziale per {province['name']} ({len(results)} film)...")
+            save_to_mongodb(results)
+            all_results.extend(results)
+        
         time.sleep(REQUEST_DELAY)
         
         # Update progress after completing province
-        update_progress(idx + 1, total_provinces, "scraping", province["name"])
+        update_progress(idx + 1, total_provinces, "scraping", province['name'])
     
-    print(f"\n📊 Totale record: {len(all_results)}")
+    print(f"\n📊 Totale record accumulati: {len(all_results)}")
     
-    # Update progress for saving phase
-    update_progress(total_provinces, total_provinces, "saving", "")
+    # Update progress for completion
+    update_progress(total_provinces, total_provinces, "saving", "Finalizzazione")
     
-    if all_results:
-        save_to_mongodb(all_results)
+    # (Removed final save_to_mongodb since we save incrementally)
     
     # Esempio
     if all_results:

@@ -20,6 +20,7 @@ from pymongo import MongoClient
 from pydantic import BaseModel
 from typing import Optional, List, Dict
 from auth import get_password_hash, verify_password, create_access_token, get_current_user_id
+from quiz_generator import get_daily_questions
 
 # ============================================
 # APP CONFIGURATION
@@ -79,7 +80,10 @@ def normalize_title(text: str) -> str:
     # Rimuove tutto ciò che non è alfanumerico o spazio, e normalizza gli spazi
     result = re.sub(r'[^a-zA-Z0-9\s]', ' ', result)
     result = " ".join(result.split()).lower()
+    result = " ".join(result.split()).lower()
     return result
+
+
 
 # ============================================
 # MODELS
@@ -97,6 +101,11 @@ class UserRegister(BaseModel):
     city: Optional[str] = None
     province: Optional[str] = None  # e.g., "napoli"
     region: Optional[str] = None    # e.g., "Campania"
+
+class QuizSubmission(BaseModel):
+    correct: int
+    wrong: int
+    quiz_date: str
 
 # ============================================
 # STARTUP EVENT
@@ -219,13 +228,49 @@ async def startup_event():
     # Scraper + Sync alle 00:00 (mezzanotte) - concatenati
     scheduler.add_job(scheduled_cinema_scraper, 'cron', hour=0, minute=0, id='cinema_scraper_and_sync')
     
+    # Quiz AI generation alle 03:00 (ogni notte)
+    def scheduled_quiz_generation():
+        """Genera 5 domande quiz giornaliere usando Ollama."""
+        import asyncio
+        try:
+            print("🧠 [Quiz] Avvio generazione domande AI...")
+            # Import qui per evitare circular imports
+            from quiz_generator import run_daily_quiz_generation
+            asyncio.run(run_daily_quiz_generation())
+            print("✅ [Quiz] Generazione completata.")
+        except Exception as e:
+            print(f"❌ [Quiz] Errore generazione: {e}")
+    
+    scheduler.add_job(scheduled_quiz_generation, 'cron', hour=2, minute=50, id='quiz_generation')
+    
     scheduler.start()
-    print("🕒 Scheduler avviato: Movie Updater ogni 24h + Cinema Scraper+Sync a mezzanotte.")
+    print("🕒 Scheduler avviato: Movie Updater ogni 24h + Cinema Scraper+Sync a mezzanotte + Quiz AI alle 03:00.")
     
     # Eseguiamo anche un update SUBITO all'avvio in background (con lock)
     import threading
-    t = threading.Thread(target=scheduled_movie_updater)
-    t.start()
+    t_updater = threading.Thread(target=scheduled_movie_updater)
+    t_updater.start()
+    
+    # --------------------------------------------
+    # STALE DATA CHECK (Auto-Start Scraper + Sync)
+    # --------------------------------------------
+    # Controlla se i dati del cinema sono aggiornati a oggi.
+    # Se la data ultima esecuzione != oggi, avvia lo scraper.
+    try:
+        scraper_status = db["scraper_progress"].find_one({"_id": "cinema_scraper"})
+        last_run_date = scraper_status.get("updated_at", "")[:10] if scraper_status else ""
+        today_date = datetime.utcnow().strftime("%Y-%m-%d")
+        
+        if last_run_date != today_date:
+            print(f"⚠️ [Startup] Dati cinema vecchi (Last: '{last_run_date}' vs Today: '{today_date}').")
+            print("🚀 [Startup] Avvio automatico Scraper + Sync in background...")
+            t_scraper = threading.Thread(target=scheduled_cinema_scraper)
+            t_scraper.start()
+        else:
+            print("✅ [Startup] Dati cinema già aggiornati a oggi.")
+            
+    except Exception as e:
+        print(f"⚠️ [Startup] Errore check dati vecchi: {e}")
     
     # Carica dati CSV se esistono e non sono già stati processati
     csv_path = "/data/ratings.csv"
@@ -663,6 +708,50 @@ async def register(user: UserRegister):
     
     return {"message": "Utente registrato con successo", "username": user.username}
 
+# ============================================
+# QUIZ ENDPOINTS
+# ============================================
+@app.get("/quiz/questions")
+async def get_quiz_questions():
+    """Ottiene le domande del quiz giornaliero."""
+    return get_daily_questions(5)
+
+@app.post("/quiz/submit")
+async def submit_quiz(submission: QuizSubmission, current_user_id: str = Depends(get_current_user_id)):
+    """Registra il risultato del quiz."""
+    stats = stats_collection.find_one({"user_id": current_user_id}) or {}
+    
+    # Check if quiz was already taken today
+    if stats.get("last_quiz_date") == submission.quiz_date:
+        # Return existing stats without updating
+        return {
+            "message": "Quiz già completato oggi", 
+            "stats": {
+                "correct": stats.get("quiz_correct_count", 0), 
+                "wrong": stats.get("quiz_wrong_count", 0)
+            },
+            "updated": False
+        }
+    
+    # Aggiorna statistiche quiz
+    quiz_correct = stats.get("quiz_correct_count", 0) + submission.correct
+    quiz_wrong = stats.get("quiz_wrong_count", 0) + submission.wrong
+    quiz_attempts = stats.get("quiz_total_attempts", 0) + 1
+    
+    stats_collection.update_one(
+        {"user_id": current_user_id},
+        {
+            "$set": {
+                "quiz_correct_count": quiz_correct,
+                "quiz_wrong_count": quiz_wrong,
+                "quiz_total_attempts": quiz_attempts,
+                "last_quiz_date": submission.quiz_date
+            }
+        },
+        upsert=True
+    )
+    return {"message": "Quiz registrato", "stats": {"correct": quiz_correct, "wrong": quiz_wrong}, "updated": True}
+
 @app.post("/login")
 async def login(user: UserAuth):
     """Effettua il login."""
@@ -1050,7 +1139,7 @@ async def get_cinema_films(
         formatted_cinemas = []
         for cinema in cinemas:
             formatted_cinemas.append({
-                "name": cinema.get("cinema_name", ""),
+                "name": cinema.get("name", ""),
                 "address": cinema.get("address", ""),
                 "showtimes": [
                     {"time": s.get("time", ""), "price": s.get("price", ""), "sala": s.get("sala", "")}
@@ -1380,6 +1469,12 @@ async def get_user_stats(current_user_id: str = Depends(get_current_user_id)):
     # Calcola il conteggio REALE dei film ogni volta per evitare discrepanze con la navbar/catalogo
     real_count = movies_collection.count_documents({"user_id": current_user_id})
     stats["total_watched"] = real_count
+    
+    # Assicura che i campi quiz siano presenti (default 0)
+    stats["quiz_correct_count"] = stats.get("quiz_correct_count", 0)
+    stats["quiz_wrong_count"] = stats.get("quiz_wrong_count", 0)
+    stats["quiz_total_attempts"] = stats.get("quiz_total_attempts", 0)
+    stats["last_quiz_date"] = stats.get("last_quiz_date", None)
     
     # Se mancano le nuove statistiche o sono incomplete (es. meno di 40 per i best_rated), ricalcola tutto
     needs_recalc = False
@@ -2327,4 +2422,162 @@ async def get_admin_genres_stats():
     ]
     genres = list(movies_catalog.aggregate(pipeline))
     return [{"genre": g["_id"], "count": g["count"]} for g in genres]
+
+
+# ============================================
+# QUIZ AI ENDPOINTS
+# ============================================
+from quiz_generator import (
+    get_daily_questions, 
+    get_questions_count,
+    run_daily_quiz_generation,
+    ensure_indexes as ensure_quiz_indexes
+)
+
+
+@app.get("/quiz/questions")
+async def get_quiz_questions(n: int = 5):
+    """
+    Ottiene n domande per il quiz.
+    Preferisce domande meno usate e più recenti.
+    """
+    try:
+        questions = get_daily_questions(n)
+        
+        # Se non ci sono domande, genera al volo
+        if not questions:
+            return {
+                "questions": [],
+                "total_available": 0,
+                "message": "Nessuna domanda disponibile. Genera nuove domande con /quiz/generate"
+            }
+        
+        # Formatta per il frontend
+        formatted = []
+        for q in questions:
+            formatted.append({
+                "id": q.get("movie_id", ""),
+                "movie_title": q.get("movie_title", ""),
+                "movie_year": q.get("movie_year"),
+                "question": q.get("question", ""),
+                "answers": q.get("answers", []),
+                "explanation": q.get("explanation", ""),
+                "category": q.get("category", "plot"),
+                "difficulty": q.get("difficulty", "medium")
+            })
+        
+        return {
+            "questions": formatted,
+            "total_available": get_questions_count()
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Errore recupero domande: {str(e)}")
+
+
+@app.post("/quiz/generate")
+async def generate_quiz_questions(background_tasks: BackgroundTasks, n: int = 5):
+    """
+    Genera nuove domande quiz usando Ollama.
+    Esegue in background per non bloccare la risposta.
+    """
+    async def generate_task():
+        try:
+            from quiz_generator import run_daily_quiz_generation
+            await run_daily_quiz_generation()
+        except Exception as e:
+            print(f"❌ Errore generazione quiz: {e}")
+    
+    background_tasks.add_task(generate_task)
+    
+    return {
+        "status": "generating",
+        "message": f"Generazione di {n} domande avviata in background",
+        "current_count": get_questions_count()
+    }
+
+
+
+@app.get("/quiz/history")
+async def get_quiz_history(current_user_id: str = Depends(get_current_user_id)):
+    """Ottiene la cronologia quiz dell'utente."""
+    history = list(quiz_results.find(
+        {"user_id": current_user_id},
+        {"_id": 0}
+    ).sort("date", -1).limit(20))
+    
+    # Formatta le date
+    for h in history:
+        if isinstance(h.get("date"), datetime):
+            h["date"] = h["date"].isoformat()
+    
+    return {"history": history}
+
+
+@app.get("/quiz/stats")
+async def get_quiz_stats():
+    """Statistiche globali del sistema quiz."""
+    return {
+        "total_questions": get_questions_count(),
+        "ollama_model": os.getenv("OLLAMA_MODEL", "qwen2.5:7b-instruct-q5_K_M"),
+        "ollama_url": os.getenv("OLLAMA_URL", "http://ollama:11434")
+    }
+
+
+# Pydantic model for quiz submission
+class QuizSubmitRequest(BaseModel):
+    correct: int
+    wrong: int
+    quiz_date: Optional[str] = None
+
+@app.post("/quiz/submit")
+async def submit_quiz_results(
+    results: QuizSubmitRequest,
+    current_user_id: str = Depends(get_current_user_id)
+):
+    """
+    Salva i risultati del quiz nel documento user_stats dell'utente.
+    Solo il PRIMO tentativo del giorno viene conteggiato nelle statistiche.
+    
+    Body: { "correct": 3, "wrong": 2, "quiz_date": "2026-01-12" }
+    """
+    correct = results.correct
+    wrong = results.wrong
+    quiz_date = results.quiz_date or datetime.utcnow().strftime("%Y-%m-%d")
+    
+    # Recupera le stats attuali dell'utente
+    user_stats = stats_collection.find_one({"user_id": current_user_id})
+    last_quiz_date = user_stats.get("last_quiz_date", "") if user_stats else ""
+    
+    first_attempt = (last_quiz_date != quiz_date)
+    
+    if first_attempt:
+        # Primo tentativo del giorno: aggiorna i contatori in user_stats
+        stats_collection.update_one(
+            {"user_id": current_user_id},
+            {
+                "$inc": {
+                    "quiz_correct_count": correct,
+                    "quiz_wrong_count": wrong,
+                    "quiz_total_attempts": 1
+                },
+                "$set": {
+                    "last_quiz_date": quiz_date
+                }
+            },
+            upsert=True
+        )
+        print(f"✅ [Quiz] Primo tentativo per {current_user_id}: +{correct} corrette, +{wrong} sbagliate")
+    else:
+        print(f"🔁 [Quiz] Tentativo ripetuto per {current_user_id} (già completato il {quiz_date})")
+    
+    # Ritorna le stats aggiornate
+    updated_stats = stats_collection.find_one({"user_id": current_user_id})
+    
+    return {
+        "success": True,
+        "first_attempt": first_attempt,
+        "quiz_correct_count": updated_stats.get("quiz_correct_count", 0) if updated_stats else 0,
+        "quiz_wrong_count": updated_stats.get("quiz_wrong_count", 0) if updated_stats else 0,
+        "quiz_total_attempts": updated_stats.get("quiz_total_attempts", 0) if updated_stats else 0
+    }
 

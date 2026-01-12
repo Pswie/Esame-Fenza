@@ -1,66 +1,10 @@
 import { useState, useEffect } from 'react';
 import './Quiz.css';
 
-// Mock quiz data - da sostituire con dati dal backend
-const mockQuizData = [
-    {
-        id: 1,
-        question: "Which film features a bathhouse for spirits?",
-        explanation: "Spirited Away (2001) tells the story of Chihiro, a young girl who must work in a magical bathhouse for spirits to save her parents who were transformed into pigs.",
-        answers: [
-            { id: 'a', text: "Spirited Away", isCorrect: true },
-            { id: 'b', text: "My Neighbor Totoro", isCorrect: false },
-            { id: 'c', text: "Princess Mononoke", isCorrect: false },
-            { id: 'd', text: "Howl's Moving Castle", isCorrect: false }
-        ]
-    },
-    {
-        id: 2,
-        question: "Who directed 'My Neighbor Totoro'?",
-        explanation: "Hayao Miyazaki, co-founder of Studio Ghibli, directed My Neighbor Totoro in 1988. He is considered one of the greatest animation directors of all time.",
-        answers: [
-            { id: 'a', text: "Isao Takahata", isCorrect: false },
-            { id: 'b', text: "Hayao Miyazaki", isCorrect: true },
-            { id: 'c', text: "Mamoru Hosoda", isCorrect: false },
-            { id: 'd', text: "Makoto Shinkai", isCorrect: false }
-        ]
-    },
-    {
-        id: 3,
-        question: "What are the black soot spirits called?",
-        explanation: "Susuwatari (literally 'soot wanderers') are the small, fuzzy black spirits that appear in Spirited Away and My Neighbor Totoro. They carry star-shaped candy in the bathhouse!",
-        answers: [
-            { id: 'a', text: "Kodama", isCorrect: false },
-            { id: 'b', text: "Susuwatari", isCorrect: true },
-            { id: 'c', text: "Tanuki", isCorrect: false },
-            { id: 'd', text: "Yokai", isCorrect: false }
-        ]
-    },
-    {
-        id: 4,
-        question: "What is Kiki's special talent?",
-        explanation: "In Kiki's Delivery Service (1989), young witch Kiki can fly on her broom. She uses this ability to start a delivery service in a coastal town.",
-        answers: [
-            { id: 'a', text: "Talking to animals", isCorrect: false },
-            { id: 'b', text: "Making potions", isCorrect: false },
-            { id: 'c', text: "Flying on a broom", isCorrect: true },
-            { id: 'd', text: "Becoming invisible", isCorrect: false }
-        ]
-    },
-    {
-        id: 5,
-        question: "Which film is set during World War II?",
-        explanation: "Grave of the Fireflies (1988), directed by Isao Takahata, is a deeply moving film about two siblings struggling to survive in Japan during the final months of WWII.",
-        answers: [
-            { id: 'a', text: "Ponyo", isCorrect: false },
-            { id: 'b', text: "Grave of the Fireflies", isCorrect: true },
-            { id: 'c', text: "Arrietty", isCorrect: false },
-            { id: 'd', text: "Tales from Earthsea", isCorrect: false }
-        ]
-    }
-];
-
 export function Quiz() {
+    const [questions, setQuestions] = useState<any[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
     const [currentQuestion, setCurrentQuestion] = useState(0);
     const [score, setScore] = useState(0);
     const [selectedAnswer, setSelectedAnswer] = useState<string | null>(null);
@@ -68,7 +12,33 @@ export function Quiz() {
     const [isAnswered, setIsAnswered] = useState(false);
     const [quizComplete, setQuizComplete] = useState(false);
 
-    const question = mockQuizData[currentQuestion];
+    useEffect(() => {
+        fetchQuestions();
+    }, []);
+
+    const fetchQuestions = async () => {
+        try {
+            setLoading(true);
+            const response = await fetch('http://localhost:8000/quiz/questions');
+            if (!response.ok) throw new Error('Failed to fetch questions');
+
+            const data = await response.json();
+
+            if (Array.isArray(data)) {
+                setQuestions(data);
+            } else if (data.questions && Array.isArray(data.questions)) {
+                setQuestions(data.questions);
+            } else {
+                setQuestions([]);
+                console.log("No questions available:", data);
+            }
+        } catch (err) {
+            setError(err instanceof Error ? err.message : 'Something went wrong');
+            console.error("Quiz fetch error:", err);
+        } finally {
+            setLoading(false);
+        }
+    };
 
     useEffect(() => {
         setSelectedAnswer(null);
@@ -89,10 +59,36 @@ export function Quiz() {
     };
 
     const goNext = () => {
-        if (currentQuestion < mockQuizData.length - 1) {
+        if (currentQuestion < questions.length - 1) {
             setCurrentQuestion(currentQuestion + 1);
         } else {
+            // Quiz complete - submit results
+            // Note: score is already updated by handleAnswerClick, so we use it directly
+            submitResults(score, questions.length - score);
             setQuizComplete(true);
+        }
+    };
+
+    const submitResults = async (correct: number, wrong: number) => {
+        try {
+            const token = localStorage.getItem('token');
+            const today = new Date().toISOString().split('T')[0];
+
+            await fetch('http://localhost:8000/quiz/submit', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({
+                    correct,
+                    wrong,
+                    quiz_date: today
+                })
+            });
+            console.log(`Quiz submitted: ${correct} correct, ${wrong} wrong`);
+        } catch (err) {
+            console.error('Failed to submit quiz results:', err);
         }
     };
 
@@ -109,6 +105,7 @@ export function Quiz() {
         setShowResult(false);
         setIsAnswered(false);
         setQuizComplete(false);
+        fetchQuestions();
     };
 
     const getButtonClass = (answer: { id: string; isCorrect: boolean }) => {
@@ -120,9 +117,39 @@ export function Quiz() {
         return 'dimmed';
     };
 
-    // Quiz Complete Screen
+    if (loading) return (
+        <div className="quiz-page">
+            <div className="quiz-card">
+                <h1>Loading Quiz... 🎬</h1>
+                <p>Generating fresh questions for you...</p>
+            </div>
+        </div>
+    );
+
+    if (error) return (
+        <div className="quiz-page">
+            <div className="quiz-card">
+                <h1>Error loading quiz 😢</h1>
+                <p>{error}</p>
+                <button className="restart-btn" onClick={fetchQuestions}>Retry</button>
+            </div>
+        </div>
+    );
+
+    if (questions.length === 0) return (
+        <div className="quiz-page">
+            <div className="quiz-card">
+                <h1>No questions for today yet! 🍿</h1>
+                <p>Check back later or check the backend generation.</p>
+                <button className="restart-btn" onClick={fetchQuestions}>Check Again</button>
+            </div>
+        </div>
+    );
+
+    const question = questions[currentQuestion];
+
     if (quizComplete) {
-        const percentage = Math.round((score / mockQuizData.length) * 100);
+        const percentage = Math.round((score / questions.length) * 100);
         let message = '';
 
         if (percentage === 100) {
@@ -137,10 +164,9 @@ export function Quiz() {
 
         return (
             <div className="quiz-page">
-                {/* Complete Card */}
                 <div className="quiz-card complete-card">
                     <h1>Quiz Complete! 🌟</h1>
-                    <div className="score-big">{score}/{mockQuizData.length}</div>
+                    <div className="score-big">{score}/{questions.length}</div>
                     <p className="message">{message}</p>
                     <button className="restart-btn" onClick={resetQuiz}>
                         🌸 Try Again
@@ -152,17 +178,17 @@ export function Quiz() {
 
     return (
         <div className="quiz-page">
-            {/* Question Card */}
             <div className="quiz-card">
-                {/* Totoro in top-right of box */}
                 <img src="/totoro.svg" alt="Totoro" className="totoro-character" />
                 <div className="question-label">Question {currentQuestion + 1}:</div>
+                {question.movie_title && (
+                    <h3 className="movie-title-label">🎬 {question.movie_title} ({question.movie_year})</h3>
+                )}
                 <h2 className="question-text">{question.question}</h2>
             </div>
 
-            {/* Answer Grid */}
             <div className="answers-grid">
-                {question.answers.map((answer) => (
+                {question.answers.map((answer: any) => (
                     <button
                         key={answer.id}
                         className={`answer-btn ${getButtonClass(answer)}`}
@@ -174,17 +200,15 @@ export function Quiz() {
                 ))}
             </div>
 
-            {/* Explanation Box - shows after answering */}
             {showResult && (
-                <div className={`explanation-box ${selectedAnswer && question.answers.find(a => a.id === selectedAnswer)?.isCorrect ? 'correct' : 'incorrect'}`}>
+                <div className={`explanation-box ${selectedAnswer && question.answers.find((a: any) => a.id === selectedAnswer)?.isCorrect ? 'correct' : 'incorrect'}`}>
                     <div className="explanation-header">
-                        {selectedAnswer && question.answers.find(a => a.id === selectedAnswer)?.isCorrect
+                        {selectedAnswer && question.answers.find((a: any) => a.id === selectedAnswer)?.isCorrect
                             ? '✨ Correct!'
                             : '💫 Not quite!'}
                     </div>
                     <p className="explanation-text">{question.explanation}</p>
 
-                    {/* Navigation Buttons */}
                     <div className="nav-buttons">
                         <button
                             className="nav-btn prev-btn"
@@ -197,7 +221,7 @@ export function Quiz() {
                             className="nav-btn next-btn"
                             onClick={goNext}
                         >
-                            {currentQuestion < mockQuizData.length - 1 ? 'Next →' : 'Finish 🌟'}
+                            {currentQuestion < questions.length - 1 ? 'Next →' : 'Finish 🌟'}
                         </button>
                     </div>
                 </div>

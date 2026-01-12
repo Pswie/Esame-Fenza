@@ -126,13 +126,29 @@ export function Cinema() {
                         setSyncFilm(data.sync.current_film || '');
                     }
 
-                    // If both completed, refresh the films list
+                    // If both completed, refresh the films list and navigate to today
                     if (data.status === 'completed' && (!data.sync || data.sync.status !== 'running')) {
                         setIsRefreshing(false);
                         setIsSyncing(false);
                         setRefreshProgress(0);
-                        // Refetch films after a short delay
-                        setTimeout(() => fetchCinemaFilms(), 1000);
+                        // Refetch dates and navigate to today
+                        setTimeout(async () => {
+                            try {
+                                const token = localStorage.getItem('token');
+                                const datesResponse = await fetch('http://localhost:8000/cinema/dates', {
+                                    headers: { 'Authorization': `Bearer ${token}` }
+                                });
+                                if (datesResponse.ok) {
+                                    const datesData = await datesResponse.json();
+                                    setAvailableDates(datesData.available_dates || []);
+                                    setTodayDate(datesData.today);
+                                    // Auto-navigate to today
+                                    setSelectedDate(datesData.today);
+                                }
+                            } catch (err) {
+                                console.error('Error refreshing dates:', err);
+                            }
+                        }, 1000);
                     }
                 }
             } catch (err) {
@@ -370,25 +386,30 @@ export function Cinema() {
                             {/* Cinema e Orari */}
                             <div className="cinemas-section">
                                 <h4>📍 Cinema Disponibili</h4>
-                                {selectedFilm.cinemas.map((cinema, idx) => (
-                                    <div key={idx} className="cinema-block">
-                                        <div className="cinema-header">
-                                            <span className="cinema-name">{cinema.name}</span>
-                                            {cinema.address && (
-                                                <span className="cinema-address">{cinema.address}</span>
-                                            )}
+                                {selectedFilm.cinemas.map((cinema, idx) => {
+                                    // Sort showtimes by time ascending
+                                    const sortedShowtimes = [...cinema.showtimes].sort((a, b) => {
+                                        const timeA = a.time.replace(':', '');
+                                        const timeB = b.time.replace(':', '');
+                                        return parseInt(timeA) - parseInt(timeB);
+                                    });
+                                    return (
+                                        <div key={idx} className="cinema-block">
+                                            <div className="cinema-name-header">
+                                                🎬 {cinema.name}
+                                            </div>
+                                            <div className="showtimes-grid">
+                                                {sortedShowtimes.map((show, sIdx) => (
+                                                    <button key={sIdx} className="showtime-btn">
+                                                        <span className="time">{show.time}</span>
+                                                        {show.price && <span className="price">{show.price}</span>}
+                                                        {show.sala && <span className="sala">{show.sala}</span>}
+                                                    </button>
+                                                ))}
+                                            </div>
                                         </div>
-                                        <div className="showtimes-grid">
-                                            {cinema.showtimes.map((show, sIdx) => (
-                                                <button key={sIdx} className="showtime-btn">
-                                                    <span className="time">{show.time}</span>
-                                                    {show.price && <span className="price">{show.price}</span>}
-                                                    {show.sala && <span className="sala">{show.sala}</span>}
-                                                </button>
-                                            ))}
-                                        </div>
-                                    </div>
-                                ))}
+                                    );
+                                })}
                             </div>
                         </div>
                     </div>

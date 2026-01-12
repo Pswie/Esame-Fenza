@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, BarChart, Bar, ScatterChart, Scatter, ZAxis, Legend, ReferenceLine } from 'recharts';
 import { StatsCard } from '../components/StatsCard';
 import { MovieCard } from '../components/MovieCard';
+import { useNavigate } from 'react-router-dom';
 import './Dashboard.css';
 
 interface DashboardData {
@@ -23,6 +24,11 @@ interface DashboardData {
     rating_vs_imdb?: { title: string; user_rating: number; user_rating_10: number; imdb_rating: number; difference: number }[];
     total_unique_directors?: number;
     total_unique_actors?: number;
+    // Quiz stats
+    quiz_correct_count?: number;
+    quiz_wrong_count?: number;
+    quiz_total_attempts?: number;
+    last_quiz_date?: string;
 }
 
 interface MonthlyStats {
@@ -33,6 +39,7 @@ interface MonthlyStats {
 }
 
 export function Dashboard() {
+    const navigate = useNavigate();
     const [data, setData] = useState<DashboardData | null>(null);
     const [loading, setLoading] = useState(true);
     const [noData, setNoData] = useState(false);
@@ -43,9 +50,10 @@ export function Dashboard() {
     const [activeRatingIndex, setActiveRatingIndex] = useState<number | null>(null);
     const [activeYearIndex, setActiveYearIndex] = useState<number | null>(null);
     const [minMoviesFilter, setMinMoviesFilter] = useState<number>(1);
-    const [selectedPerson, setSelectedPerson] = useState<{name: string, type: 'director' | 'actor'} | null>(null);
+    const [selectedPerson, setSelectedPerson] = useState<{ name: string, type: 'director' | 'actor' } | null>(null);
     const [personMovies, setPersonMovies] = useState<any[]>([]);
     const [loadingPersonMovies, setLoadingPersonMovies] = useState(false);
+    const [hideQuizStats, setHideQuizStats] = useState(() => localStorage.getItem('hideQuizStats') === 'true');
     const fileInputRef = useRef<HTMLInputElement>(null);
 
     const fetchStats = () => {
@@ -95,7 +103,7 @@ export function Dashboard() {
         setLoadingPersonMovies(true);
         setSelectedPerson({ name, type });
         setPersonMovies([]);
-        
+
         fetch(`http://localhost:8000/movies/person?name=${encodeURIComponent(name)}&type=${type}`, {
             headers: {
                 'Authorization': `Bearer ${localStorage.getItem('token')}`
@@ -174,7 +182,7 @@ export function Dashboard() {
                 </div>
 
                 <div className="upload-section">
-                    <div 
+                    <div
                         className={`upload-zone ${uploading ? 'uploading' : ''}`}
                         onClick={() => fileInputRef.current?.click()}
                         onDragOver={(e) => { e.preventDefault(); }}
@@ -194,7 +202,7 @@ export function Dashboard() {
                                 if (file) handleFileUpload(file);
                             }}
                         />
-                        
+
                         {uploading ? (
                             <div className="upload-loading">
                                 <div className="spinner"></div>
@@ -283,6 +291,20 @@ export function Dashboard() {
         { rating: "⭐5", count: Math.round(displayData.total_watched * 0.25), stars: 5 },
     ];
 
+    // Quiz stats helpers
+    const today = new Date().toISOString().split('T')[0];
+    const hasQuizToday = displayData.last_quiz_date === today;
+    const quizCorrect = displayData.quiz_correct_count || 0;
+    const quizWrong = displayData.quiz_wrong_count || 0;
+    const quizTotal = quizCorrect + quizWrong;
+    const quizAccuracy = quizTotal > 0 ? Math.round((quizCorrect / quizTotal) * 100) : 0;
+
+    const toggleHideQuizStats = () => {
+        const newValue = !hideQuizStats;
+        setHideQuizStats(newValue);
+        localStorage.setItem('hideQuizStats', String(newValue));
+    };
+
     return (
         <div className="dashboard-page">
             <div className="page-header">
@@ -319,6 +341,56 @@ export function Dashboard() {
                     value={watchTimeDisplay}
                     subtitle={`Media: ${displayData.avg_duration || 120} min/film`}
                 />
+            </div>
+
+            {/* ============================================
+                SEZIONE QUIZ STATS
+                ============================================ */}
+            <div className={`quiz-stats-widget ${hideQuizStats ? 'blurred-mode' : ''}`}>
+                <div className="quiz-stats-header">
+                    <h3>🧠 Quiz Cinematografico</h3>
+                    <button className="hide-quiz-btn" onClick={toggleHideQuizStats} title={hideQuizStats ? "Mostra statistiche" : "Nascondi statistiche"}>
+                        {hideQuizStats ? '👁️' : '✕'}
+                    </button>
+                </div>
+
+                <div className="quiz-stats-container">
+                    {hideQuizStats && (
+                        <div className="quiz-blur-overlay">
+                            <button className="show-quiz-btn" onClick={toggleHideQuizStats}>
+                                👁️ Mostra Statistiche
+                            </button>
+                        </div>
+                    )}
+
+                    {hasQuizToday ? (
+                        <div className="quiz-stats-content">
+                            <div className="quiz-stat-item correct">
+                                <span className="quiz-stat-value">{quizCorrect}</span>
+                                <span className="quiz-stat-label">✓ Corrette</span>
+                            </div>
+                            <div className="quiz-stat-item wrong">
+                                <span className="quiz-stat-value">{quizWrong}</span>
+                                <span className="quiz-stat-label">✗ Sbagliate</span>
+                            </div>
+                            <div className="quiz-stat-item accuracy">
+                                <span className="quiz-stat-value">{quizAccuracy}%</span>
+                                <span className="quiz-stat-label">Precisione</span>
+                            </div>
+                            <div className="quiz-stat-item attempts">
+                                <span className="quiz-stat-value">{displayData.quiz_total_attempts || 0}</span>
+                                <span className="quiz-stat-label">Quiz Completati</span>
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="quiz-cta">
+                            <p>Non hai ancora fatto il quiz di oggi! Metti alla prova le tue conoscenze cinematografiche 🎬</p>
+                            <button className="quiz-cta-btn" onClick={() => navigate('/quiz')}>
+                                Fai il Quiz →
+                            </button>
+                        </div>
+                    )}
+                </div>
             </div>
 
             {/* ============================================
@@ -403,8 +475,8 @@ export function Dashboard() {
                 <div className="chart-container">
                     <h3>⭐ Come Voti i Film</h3>
                     <ResponsiveContainer width="100%" height={250}>
-                        <BarChart 
-                            data={ratingChartData} 
+                        <BarChart
+                            data={ratingChartData}
                             layout="vertical"
                             onMouseLeave={() => setActiveRatingIndex(null)}
                         >
@@ -418,17 +490,17 @@ export function Dashboard() {
                                 formatter={(value: number) => [`${value} film`, 'Totale']}
                                 cursor={{ fill: 'transparent' }}
                             />
-                            <Bar 
-                                dataKey="count" 
+                            <Bar
+                                dataKey="count"
                                 radius={[0, 8, 8, 0]}
                                 onMouseEnter={(_, index) => setActiveRatingIndex(index)}
                             >
                                 {ratingChartData.map((_, index) => (
-                                    <Cell 
-                                        key={`cell-${index}`} 
-                                        fill={activeRatingIndex === null || activeRatingIndex === index 
-                                            ? ratingColors[index] 
-                                            : '#3a3a3a'} 
+                                    <Cell
+                                        key={`cell-${index}`}
+                                        fill={activeRatingIndex === null || activeRatingIndex === index
+                                            ? ratingColors[index]
+                                            : '#3a3a3a'}
                                         style={{ transition: 'fill 0.2s ease' }}
                                     />
                                 ))}
@@ -437,8 +509,8 @@ export function Dashboard() {
                     </ResponsiveContainer>
                     <div className="rating-summary">
                         <span className="rating-insight">
-                            {(ratingChartData[4]?.count || 0) > (ratingChartData[0]?.count || 0) 
-                                ? "🎉 Sei un appassionato generoso!" 
+                            {(ratingChartData[4]?.count || 0) > (ratingChartData[0]?.count || 0)
+                                ? "🎉 Sei un appassionato generoso!"
                                 : "🎯 Sei un critico esigente!"}
                         </span>
                     </div>
@@ -448,9 +520,9 @@ export function Dashboard() {
                 <div className="chart-container">
                     <h3>🏆 Top 5 Anni Più Visti</h3>
                     <ResponsiveContainer width="100%" height={250}>
-                        <BarChart 
-                            data={displayData.top_years || []} 
-                            layout="vertical" 
+                        <BarChart
+                            data={displayData.top_years || []}
+                            layout="vertical"
                             margin={{ left: 60 }}
                             onMouseLeave={() => setActiveYearIndex(null)}
                         >
@@ -464,17 +536,17 @@ export function Dashboard() {
                                 formatter={(value: number) => [`${value} film`, 'Visti']}
                                 cursor={{ fill: 'transparent' }}
                             />
-                            <Bar 
-                                dataKey="count" 
+                            <Bar
+                                dataKey="count"
                                 radius={[0, 8, 8, 0]}
                                 onMouseEnter={(_, index) => setActiveYearIndex(index)}
                             >
                                 {(displayData.top_years || []).map((_, index) => (
-                                    <Cell 
-                                        key={`cell-${index}`} 
-                                        fill={activeYearIndex === null || activeYearIndex === index 
-                                            ? yearColors[index % yearColors.length] 
-                                            : '#3a3a3a'} 
+                                    <Cell
+                                        key={`cell-${index}`}
+                                        fill={activeYearIndex === null || activeYearIndex === index
+                                            ? yearColors[index % yearColors.length]
+                                            : '#3a3a3a'}
                                         style={{ transition: 'fill 0.2s ease' }}
                                     />
                                 ))}
@@ -494,26 +566,26 @@ export function Dashboard() {
                     <ResponsiveContainer width="100%" height={350}>
                         <ScatterChart margin={{ top: 20, right: 30, bottom: 40, left: 50 }}>
                             <CartesianGrid strokeDasharray="3 3" stroke="#333" />
-                            <XAxis 
-                                type="number" 
-                                dataKey="imdb_rating" 
-                                name="IMDb" 
+                            <XAxis
+                                type="number"
+                                dataKey="imdb_rating"
+                                name="IMDb"
                                 stroke="#757575"
                                 domain={[0, 10]}
                                 label={{ value: 'Rating IMDb', position: 'bottom', fill: '#757575', offset: 0 }}
                             />
-                            <YAxis 
-                                type="number" 
-                                dataKey="user_rating_10" 
-                                name="Tuo voto" 
+                            <YAxis
+                                type="number"
+                                dataKey="user_rating_10"
+                                name="Tuo voto"
                                 stroke="#757575"
                                 domain={[0, 10]}
                                 label={{ value: 'Tuo Rating (scala 10)', angle: -90, position: 'insideLeft', fill: '#757575' }}
                             />
                             <ZAxis type="number" range={[100, 400]} />
-                            <ReferenceLine 
-                                segment={[{ x: 0, y: 0 }, { x: 10, y: 10 }]} 
-                                stroke="#E50914" 
+                            <ReferenceLine
+                                segment={[{ x: 0, y: 0 }, { x: 10, y: 10 }]}
+                                stroke="#E50914"
                                 strokeDasharray="5 5"
                                 strokeWidth={2}
                             />
@@ -536,9 +608,9 @@ export function Dashboard() {
                                     return null;
                                 }}
                             />
-                            <Scatter 
-                                name="Film" 
-                                data={displayData.rating_vs_imdb.slice(0, 15)} 
+                            <Scatter
+                                name="Film"
+                                data={displayData.rating_vs_imdb.slice(0, 15)}
                                 fill="#E50914"
                             />
                         </ScatterChart>
@@ -569,9 +641,9 @@ export function Dashboard() {
                                     <span className="rank-stats">{director.count} film • ⭐ {director.avg_rating}</span>
                                 </div>
                                 <div className="rank-bar">
-                                    <div 
-                                        className="rank-bar-fill" 
-                                        style={{ 
+                                    <div
+                                        className="rank-bar-fill"
+                                        style={{
                                             width: `${(director.count / (displayData.top_directors?.[0]?.count || 1)) * 100}%`,
                                             background: '#3b82f6'
                                         }}
@@ -591,8 +663,8 @@ export function Dashboard() {
                         <h3>Migliori per Voto Medio</h3>
                         <div className="header-filter">
                             {[1, 2, 3, 5].map(num => (
-                                <button 
-                                    key={num} 
+                                <button
+                                    key={num}
                                     className={`compact-filter-chip ${minMoviesFilter === num ? 'active' : ''}`}
                                     onClick={() => setMinMoviesFilter(num)}
                                 >
@@ -605,25 +677,25 @@ export function Dashboard() {
                     <div className="ranking-list">
                         {(displayData.best_rated_directors || [])
                             .filter(d => d.count >= minMoviesFilter)
-                            .slice(0, 10) 
+                            .slice(0, 10)
                             .map((director, index) => (
-                            <div key={director.name} className="ranking-item clickable" onClick={() => fetchPersonMovies(director.name, 'director')}>
-                                <span className="rank-position">#{index + 1}</span>
-                                <div className="rank-info">
-                                    <span className="rank-name">{director.name}</span>
-                                    <span className="rank-stats">⭐ {director.avg_rating} media ({director.count} film)</span>
+                                <div key={director.name} className="ranking-item clickable" onClick={() => fetchPersonMovies(director.name, 'director')}>
+                                    <span className="rank-position">#{index + 1}</span>
+                                    <div className="rank-info">
+                                        <span className="rank-name">{director.name}</span>
+                                        <span className="rank-stats">⭐ {director.avg_rating} media ({director.count} film)</span>
+                                    </div>
+                                    <div className="rank-bar">
+                                        <div
+                                            className="rank-bar-fill"
+                                            style={{
+                                                width: `${(director.avg_rating / 5) * 100}%`,
+                                                background: '#10b981'
+                                            }}
+                                        />
+                                    </div>
                                 </div>
-                                <div className="rank-bar">
-                                    <div 
-                                        className="rank-bar-fill" 
-                                        style={{ 
-                                            width: `${(director.avg_rating / 5) * 100}%`,
-                                            background: '#10b981'
-                                        }}
-                                    />
-                                </div>
-                            </div>
-                        ))}
+                            ))}
                         {(!(displayData.best_rated_directors || []).some(d => d.count >= minMoviesFilter)) && (
                             <p className="no-data">Nessun regista con almeno {minMoviesFilter} film</p>
                         )}
@@ -649,9 +721,9 @@ export function Dashboard() {
                                     <span className="rank-stats">{actor.count} film • ⭐ {actor.avg_rating}</span>
                                 </div>
                                 <div className="rank-bar">
-                                    <div 
-                                        className="rank-bar-fill" 
-                                        style={{ 
+                                    <div
+                                        className="rank-bar-fill"
+                                        style={{
                                             width: `${(actor.count / (displayData.top_actors?.[0]?.count || 1)) * 100}%`,
                                             background: '#ef4444'
                                         }}
@@ -671,8 +743,8 @@ export function Dashboard() {
                         <h3>Migliori per Voto Medio</h3>
                         <div className="header-filter">
                             {[1, 2, 3, 5].map(num => (
-                                <button 
-                                    key={num} 
+                                <button
+                                    key={num}
                                     className={`compact-filter-chip ${minMoviesFilter === num ? 'active' : ''}`}
                                     onClick={() => setMinMoviesFilter(num)}
                                 >
@@ -687,23 +759,23 @@ export function Dashboard() {
                             .filter(a => a.count >= minMoviesFilter)
                             .slice(0, 10)
                             .map((actor, index) => (
-                            <div key={actor.name} className="ranking-item clickable" onClick={() => fetchPersonMovies(actor.name, 'actor')}>
-                                <span className="rank-position">#{index + 1}</span>
-                                <div className="rank-info">
-                                    <span className="rank-name">{actor.name}</span>
-                                    <span className="rank-stats">⭐ {actor.avg_rating} media ({actor.count} film)</span>
+                                <div key={actor.name} className="ranking-item clickable" onClick={() => fetchPersonMovies(actor.name, 'actor')}>
+                                    <span className="rank-position">#{index + 1}</span>
+                                    <div className="rank-info">
+                                        <span className="rank-name">{actor.name}</span>
+                                        <span className="rank-stats">⭐ {actor.avg_rating} media ({actor.count} film)</span>
+                                    </div>
+                                    <div className="rank-bar">
+                                        <div
+                                            className="rank-bar-fill"
+                                            style={{
+                                                width: `${(actor.avg_rating / 5) * 100}%`,
+                                                background: '#8b5cf6'
+                                            }}
+                                        />
+                                    </div>
                                 </div>
-                                <div className="rank-bar">
-                                    <div 
-                                        className="rank-bar-fill" 
-                                        style={{ 
-                                            width: `${(actor.avg_rating / 5) * 100}%`,
-                                            background: '#8b5cf6'
-                                        }}
-                                    />
-                                </div>
-                            </div>
-                        ))}
+                            ))}
                         {(!(displayData.best_rated_actors || []).some(a => a.count >= minMoviesFilter)) && (
                             <p className="no-data">Nessun attore con almeno {minMoviesFilter} film</p>
                         )}
@@ -740,7 +812,7 @@ export function Dashboard() {
                 <div className="person-modal-overlay" onClick={() => setSelectedPerson(null)}>
                     <div className="person-modal-content" onClick={e => e.stopPropagation()}>
                         <button className="close-modal" onClick={() => setSelectedPerson(null)}>&times;</button>
-                        
+
                         <div className="modal-header">
                             <h2>{selectedPerson.type === 'director' ? '🎬 Film di' : '🌟 Film con'} {selectedPerson.name}</h2>
                             <p>Hai visto {personMovies.length} film con questo {selectedPerson.type === 'director' ? 'regista' : 'attore'}</p>

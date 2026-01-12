@@ -82,6 +82,25 @@ services:
     depends_on:
       - backend
 
+  # OLLAMA: AI per generazione Quiz
+  ollama:
+    image: ollama/ollama:latest
+    container_name: cinematch_ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [ gpu ]
+
 volumes:
   mongo_data:
   grafana_data:
+  ollama_data:

@@ -399,6 +399,15 @@
     color: var(--text-muted);
 }
 
+.cinema-name-header {
+    font-weight: 700;
+    font-size: 1.05rem;
+    color: var(--accent-secondary);
+    margin-bottom: 10px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border-color);
+}
+
 /* Enhanced Showtime Buttons */
 .showtime-btn {
     display: flex;

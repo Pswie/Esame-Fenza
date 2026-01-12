@@ -61,6 +61,14 @@
     margin-bottom: 0.5rem;
 }
 
+.movie-title-label {
+    font-family: 'Caveat', cursive;
+    font-size: 1.4rem;
+    font-weight: 600;
+    color: #4a7c4f;
+    margin: 0.2rem 0 0.8rem;
+}
+
 .question-text {
     font-family: 'Caveat', cursive;
     font-size: 1.6rem;
