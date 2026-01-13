@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, BarChart, Bar, ScatterChart, Scatter, ZAxis, Legend, ReferenceLine } from 'recharts';
 import { StatsCard } from '../components/StatsCard';
 import { MovieCard } from '../components/MovieCard';
+import { catalogAPI, type CatalogMovie } from '../services/api';
 import { useNavigate } from 'react-router-dom';
 import './Dashboard.css';
 
@@ -17,15 +18,11 @@ interface DashboardData {
     // Nuove statistiche
     rating_chart_data?: { rating: string; count: number; stars: number }[];
     watch_time_hours?: number;
-    watch_time_minutes?: number;
     avg_duration?: number;
-    top_directors?: { name: string; count: number; avg_rating: number }[];
-    top_actors?: { name: string; count: number; avg_rating: number }[];
+    // Attori e Registi (unica fonte, frontend deriva le viste)
     best_rated_directors?: { name: string; count: number; avg_rating: number }[];
     best_rated_actors?: { name: string; count: number; avg_rating: number }[];
     rating_vs_imdb?: { title: string; user_rating: number; user_rating_10: number; imdb_rating: number; difference: number }[];
-    total_unique_directors?: number;
-    total_unique_actors?: number;
     // Quiz stats
     quiz_correct_count?: number;
     quiz_wrong_count?: number;
@@ -63,7 +60,40 @@ export function Dashboard() {
     const [personMovies, setPersonMovies] = useState<any[]>([]);
     const [loadingPersonMovies, setLoadingPersonMovies] = useState(false);
     const [hideQuizStats, setHideQuizStats] = useState(() => localStorage.getItem('hideQuizStats') === 'true');
+    const [selectedTrendMovie, setSelectedTrendMovie] = useState<any | null>(null);
+    const [trendMovieDetails, setTrendMovieDetails] = useState<CatalogMovie | null>(null);
+    const [loadingTrendMovie, setLoadingTrendMovie] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
+
+    // Fetch film details when a trend movie is selected
+    useEffect(() => {
+        if (selectedTrendMovie) {
+            setLoadingTrendMovie(true);
+            setTrendMovieDetails(null);
+            console.log('📽️ Searching for trend movie:', selectedTrendMovie.title);
+            catalogAPI.searchMovies(selectedTrendMovie.title, 10)
+                .then(result => {
+                    console.log('📽️ Search result:', result);
+                    if (result.results && result.results.length > 0) {
+                        // Find best match by title (case insensitive)
+                        const match = result.results.find(m =>
+                            m.title.toLowerCase().trim() === selectedTrendMovie.title.toLowerCase().trim()
+                        ) || result.results[0];
+                        console.log('📽️ Best match:', match);
+                        setTrendMovieDetails(match);
+                    } else {
+                        console.log('📽️ No results found');
+                    }
+                    setLoadingTrendMovie(false);
+                })
+                .catch(err => {
+                    console.error('📽️ Search error:', err);
+                    setLoadingTrendMovie(false);
+                });
+        } else {
+            setTrendMovieDetails(null);
+        }
+    }, [selectedTrendMovie]);
 
     const fetchStats = () => {
         fetch('http://localhost:8000/user-stats', {
@@ -83,8 +113,8 @@ export function Dashboard() {
                 if (stats && !stats.detail) {
                     console.log('📊 Stats received:', {
                         genre_data_length: stats.genre_data?.length || 0,
-                        top_actors_length: stats.top_actors?.length || 0,
-                        top_directors_length: stats.top_directors?.length || 0
+                        best_rated_actors_length: stats.best_rated_actors?.length || 0,
+                        best_rated_directors_length: stats.best_rated_directors?.length || 0
                     });
                     setData(stats);
                     setNoData(false);
@@ -286,12 +316,19 @@ export function Dashboard() {
         top_years: [],
         rating_chart_data: [],
         watch_time_hours: 0,
-        watch_time_minutes: 0,
         avg_duration: 0,
-        top_directors: [],
-        top_actors: [],
+        best_rated_directors: [],
+        best_rated_actors: [],
         rating_vs_imdb: []
     };
+
+    // Deriva top_actors e top_directors da best_rated_* (ordinati per count)
+    const topDirectors = [...(displayData.best_rated_directors || [])]
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 15);
+    const topActors = [...(displayData.best_rated_actors || [])]
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 15);
 
     // Colori per le barre
     const yearColors = ['#E50914', '#FF6B35', '#00529B', '#8B5CF6', '#06B6D4'];
@@ -320,15 +357,14 @@ export function Dashboard() {
         const yearEntry = displayData.year_data?.find(y => y.year === selectedYear);
         return yearEntry?.monthly_data || [];
     };
-    
+
     const monthlyDataForYear = getMonthlyDataForYear();
-    const filmsInSelectedYear = monthlyStats?.total_films || 
+    const filmsInSelectedYear = monthlyStats?.total_films ||
         displayData.year_data?.find(y => y.year === selectedYear)?.total_films || 0;
 
-    // Formatta ore totali
+    // Formatta ore totali (solo ore, minuti rimossi dallo schema)
     const totalHours = displayData.watch_time_hours || 0;
-    const totalMinutes = displayData.watch_time_minutes || 0;
-    const watchTimeDisplay = totalHours > 0 ? `${totalHours}h ${totalMinutes}m` : `${displayData.total_watched * 2}h`;
+    const watchTimeDisplay = totalHours > 0 ? `${totalHours}h` : `${displayData.total_watched * 2}h`;
 
     // Rating distribution data (con fallback)
     const ratingChartData = displayData.rating_chart_data || [
@@ -649,9 +685,10 @@ export function Dashboard() {
                 SEZIONE GLOBAL TRENDS (NETFLIX STYLE)
                 ============================================ */}
             <h2 className="section-title main-section-divider">🌍 Community Trends</h2>
-            <div className="global-trends-section">
+            <div className="global-trends-section trends-grid-layout">
+                {/* Left: Top 10 Films */}
                 <div className="trends-scroll-container">
-                    <h3>🔥 Top 10 Più Visti Oggi</h3>
+                    <h3>🔥 Top 10 Più Visti</h3>
                     <div className="netflix-row">
                         {globalTrends?.top_movies?.map((movie, index) => {
                             const posterUrl = movie.poster_path && movie.poster_path.startsWith('http')
@@ -661,7 +698,12 @@ export function Dashboard() {
                                     : 'https://via.placeholder.com/160x240/1a1a2e/e50914?text=No+Poster';
 
                             return (
-                                <div key={index} className="trend-card" title={movie.title}>
+                                <div
+                                    key={index}
+                                    className="trend-card"
+                                    title={movie.title}
+                                    onClick={() => setSelectedTrendMovie(movie)}
+                                >
                                     <div className="trend-rank">{index + 1}</div>
                                     <img
                                         src={posterUrl}
@@ -684,12 +726,13 @@ export function Dashboard() {
                     </div>
                 </div>
 
-                <div className="chart-container" style={{ marginTop: '20px' }}>
-                    <h3>📈 Generi di Tendenza</h3>
+                {/* Generi di Tendenza - Horizontal Pills */}
+                <div className="trends-genres-section">
+                    <h3 className="section-subtitle">📈 Generi di Tendenza</h3>
                     <div className="genre-tags-cloud">
                         {globalTrends?.trending_genres?.map((g, i) => (
                             <span key={i} className="genre-tag-chip">
-                                {g.genre} <small>({g.count})</small>
+                                {g.genre} <span className="chip-count">({g.count})</span>
                             </span>
                         ))}
                     </div>
@@ -706,7 +749,7 @@ export function Dashboard() {
                     <h3>Registi Più Visti</h3>
                     <p className="chart-subtitle">I registi di cui hai visto più opere</p>
                     <div className="ranking-list">
-                        {(displayData.top_directors || []).slice(0, 10).map((director, index) => (
+                        {topDirectors.slice(0, 10).map((director, index) => (
                             <div key={director.name} className="ranking-item clickable" onClick={() => fetchPersonMovies(director.name, 'director')}>
                                 <span className="rank-position">#{index + 1}</span>
                                 <div className="rank-info">
@@ -717,14 +760,14 @@ export function Dashboard() {
                                     <div
                                         className="rank-bar-fill"
                                         style={{
-                                            width: `${(director.count / (displayData.top_directors?.[0]?.count || 1)) * 100}%`,
+                                            width: `${(director.count / (topDirectors[0]?.count || 1)) * 100}%`,
                                             background: '#3b82f6'
                                         }}
                                     />
                                 </div>
                             </div>
                         ))}
-                        {(!displayData.top_directors || displayData.top_directors.length === 0) && (
+                        {topDirectors.length === 0 && (
                             <p className="no-data">Dati non ancora disponibili</p>
                         )}
                     </div>
@@ -786,7 +829,7 @@ export function Dashboard() {
                     <h3>Attori Più Visti</h3>
                     <p className="chart-subtitle">I talenti che appaiono più spesso nei tuoi film</p>
                     <div className="ranking-list">
-                        {(displayData.top_actors || []).slice(0, 10).map((actor, index) => (
+                        {topActors.slice(0, 10).map((actor, index) => (
                             <div key={actor.name} className="ranking-item clickable" onClick={() => fetchPersonMovies(actor.name, 'actor')}>
                                 <span className="rank-position">#{index + 1}</span>
                                 <div className="rank-info">
@@ -797,14 +840,14 @@ export function Dashboard() {
                                     <div
                                         className="rank-bar-fill"
                                         style={{
-                                            width: `${(actor.count / (displayData.top_actors?.[0]?.count || 1)) * 100}%`,
+                                            width: `${(actor.count / (topActors[0]?.count || 1)) * 100}%`,
                                             background: '#ef4444'
                                         }}
                                     />
                                 </div>
                             </div>
                         ))}
-                        {(!displayData.top_actors || displayData.top_actors.length === 0) && (
+                        {topActors.length === 0 && (
                             <p className="no-data">Dati non ancora disponibili</p>
                         )}
                     </div>
@@ -915,16 +958,16 @@ export function Dashboard() {
                     <span className="quick-stat-label">Totale Film</span>
                 </div>
                 <div className="quick-stat-card">
-                    <span className="quick-stat-value">{displayData.avg_rating}</span>
-                    <span className="quick-stat-label">Rating Medio</span>
-                </div>
-                <div className="quick-stat-card">
-                    <span className="quick-stat-value">{displayData.avg_duration || 120}</span>
+                    <span className="quick-stat-value">{displayData.avg_duration || 0}</span>
                     <span className="quick-stat-label">Durata Media (min)</span>
                 </div>
                 <div className="quick-stat-card">
-                    <span className="quick-stat-value">{displayData.total_unique_directors || displayData.top_directors?.length || 0}</span>
+                    <span className="quick-stat-value">{displayData.best_rated_directors?.length || 0}</span>
                     <span className="quick-stat-label">Registi Diversi</span>
+                </div>
+                <div className="quick-stat-card">
+                    <span className="quick-stat-value">{displayData.best_rated_actors?.length || 0}</span>
+                    <span className="quick-stat-label">Attori Diversi</span>
                 </div>
             </div>
 
@@ -954,6 +997,76 @@ export function Dashboard() {
                                 {personMovies.length === 0 && !loadingPersonMovies && (
                                     <p className="no-movies">Nessun film trovato.</p>
                                 )}
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {/* ============================================
+                MODAL FILM TREND (SAME AS MOVIEMODAL)
+                ============================================ */}
+            {selectedTrendMovie && (
+                <div className="netflix-modal-overlay" onClick={() => setSelectedTrendMovie(null)}>
+                    <div className="netflix-modal-content" onClick={e => e.stopPropagation()}>
+                        <button className="netflix-modal-close" onClick={() => setSelectedTrendMovie(null)}>
+                            ×
+                        </button>
+
+                        {loadingTrendMovie ? (
+                            <div className="netflix-modal-loading">
+                                <div className="spinner"></div>
+                                <p>Caricamento dettagli...</p>
+                            </div>
+                        ) : (
+                            <div className="movie-detail-grid">
+                                {/* Left: Poster */}
+                                <div className="detail-left">
+                                    <img
+                                        src={trendMovieDetails?.poster_url ||
+                                            (selectedTrendMovie.poster_path?.startsWith('http')
+                                                ? selectedTrendMovie.poster_path
+                                                : selectedTrendMovie.poster_path
+                                                    ? `https://image.tmdb.org/t/p/w300${selectedTrendMovie.poster_path}`
+                                                    : catalogAPI.STOCK_POSTER_URL)}
+                                        alt={selectedTrendMovie.title}
+                                        className="detail-poster"
+                                    />
+                                </div>
+
+                                {/* Right: Details */}
+                                <div className="detail-right">
+                                    <div className="detail-header">
+                                        <h2>{trendMovieDetails?.title || selectedTrendMovie.title}</h2>
+                                        <div className="detail-meta">
+                                            {trendMovieDetails?.year && <span>{trendMovieDetails.year}</span>}
+                                            {trendMovieDetails?.duration && <span>• {trendMovieDetails.duration} min</span>}
+                                            {trendMovieDetails?.avg_vote && <span>• ⭐ {trendMovieDetails.avg_vote.toFixed(1)}</span>}
+                                        </div>
+                                    </div>
+
+                                    <div className="detail-genres">
+                                        {trendMovieDetails?.genres?.map(g => (
+                                            <span key={g} className="detail-genre-tag">{g}</span>
+                                        ))}
+                                    </div>
+
+                                    <div className="detail-section">
+                                        <h3>Trama</h3>
+                                        <p>{trendMovieDetails?.description || "Nessuna descrizione disponibile."}</p>
+                                    </div>
+
+                                    <div className="detail-crew">
+                                        <div className="crew-item">
+                                            <span>Regia</span>
+                                            <b>{trendMovieDetails?.director || "N/A"}</b>
+                                        </div>
+                                        <div className="crew-item">
+                                            <span>Cast Principale</span>
+                                            <b>{trendMovieDetails?.actors?.split(',').slice(0, 3).join(', ') || "N/A"}</b>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
                         )}
                     </div>

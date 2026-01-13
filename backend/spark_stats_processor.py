@@ -546,19 +546,13 @@ def compute_user_stats(movies, catalog_collection):
     
     favorite_genre = top_genres[0][0] if top_genres else "Nessuno"
     
-    # 7. Top Directors/Actors (Most Frequent)
+    # 7. Top Directors/Actors - RIMOSSI, derivati lato frontend da best_rated_*
     # Filtra rating None dalla lista prima di calcolare la media
     def safe_avg(ratings_list):
         valid_ratings = [r for r in ratings_list if r is not None]
         if valid_ratings:
             return round(sum(valid_ratings) / len(valid_ratings), 1)
         return 0
-    
-    top_directors = [{
-        "name": d, 
-        "count": c, 
-        "avg_rating": safe_avg(director_ratings.get(d, []))
-    } for d, c in director_counter.most_common(10)]
     
     # 8. Best Rated Directors (Best Avg Rating, min 1 movie)
     # Restituisci TUTTI i registi con rating per permettere il filtraggio frontend
@@ -572,13 +566,6 @@ def compute_user_stats(movies, catalog_collection):
     # Sort by rating (desc), then count (desc)
     director_stats_list.sort(key=lambda x: (x["avg_rating"], x["count"]), reverse=True)
     best_rated_directors = director_stats_list  # Tutti per permettere filtraggio 1+, 2+, 3+, 5+
-    
-    top_actors = [{
-        "name": a, 
-        "count": c, 
-        "avg_rating": safe_avg(actor_ratings.get(a, []))
-    } for a, c in actor_counter.most_common(15)]
-    
     
     # 9. Best Rated Actors (Best Avg Rating, min 1 movie)
     # Restituisci TUTTI gli attori con rating per permettere il filtraggio frontend
@@ -595,30 +582,19 @@ def compute_user_stats(movies, catalog_collection):
     return {
         "total_watched": len(movies),  # TUTTI i film dell'utente
         "avg_rating": round(sum(ratings) / len(ratings), 2) if ratings else 0,
-        "rating_distribution": {str(k): v for k, v in rating_distribution.items()},
         "rating_chart_data": rating_chart_data,
         "top_rated_movies": top_rated_movies,
         "recent_movies": recent_movies,
-        "year_data": year_data,  # NUOVO: organizzato per anno
-        "available_years": available_years_list,  # NUOVO: anni disponibili
+        "year_data": year_data,  # Organizzato per anno
+        "available_years": available_years_list,
         "top_years": top_years,
         "genre_data": genre_data,
         "favorite_genre": favorite_genre,
         "watch_time_hours": total_duration // 60,
-        "watch_time_minutes": total_duration % 60,
         "avg_duration": round(total_duration / duration_count) if duration_count > 0 else 0,
-        "top_directors": top_directors,
         "best_rated_directors": best_rated_directors,
-        "top_actors": top_actors,
         "best_rated_actors": best_rated_actors,
-        "total_unique_directors": len(director_counter),
-        "total_unique_actors": len(actor_counter),
-        "total_5_stars": rating_distribution.get(5, 0),
-        "total_4_stars": rating_distribution.get(4, 0),
-        "total_3_stars": rating_distribution.get(3, 0),
-        "total_2_stars": rating_distribution.get(2, 0),
-        "total_1_stars": rating_distribution.get(1, 0),
-        "stats_version": "3.0"  # Versione aggiornata - year_data
+        "stats_version": "3.1"  # Schema ottimizzato - rimossi campi ridondanti
     }
 
 

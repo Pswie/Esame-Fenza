@@ -605,13 +605,34 @@ async def get_cinema_dates(current_user_id: str = Depends(get_current_user_id)):
         "province": user_province
     }
 
+@app.get("/cinema/provinces")
+async def get_cinema_provinces():
+    """Ottiene la lista delle province disponibili nel database showtimes."""
+    # Ottieni tutte le province uniche dalla collection showtimes
+    docs = showtimes_collection.find({}, {"regions": 1})
+    
+    provinces = set()
+    for doc in docs:
+        regions = doc.get("regions", {})
+        provinces.update(regions.keys())
+    
+    # Ordina e formatta
+    provinces_list = sorted([
+        {"slug": p, "name": p.capitalize()}
+        for p in provinces
+    ], key=lambda x: x["name"])
+    
+    return {"provinces": provinces_list}
+
 @app.get("/cinema/films")
 async def get_cinema_films(
     background_tasks: BackgroundTasks, 
     current_user_id: str = Depends(get_current_user_id),
-    date: str = None  # Optional: YYYY-MM-DD format
+    date: str = None,  # Optional: YYYY-MM-DD format
+    province: str = None  # Optional: Province slug override
 ):
     """Ottiene i film in programmazione nella provincia dell'utente con matching robusto."""
+
     
     # --- FRESHNESS CHECK ---
     # Get the most recent last_updated from showtimes (new schema)
@@ -742,7 +763,12 @@ async def get_cinema_films(
     user_province = user.get("province", "napoli") if user else "napoli"
     if not user_province:
         user_province = "napoli"
-    user_province = user_province.lower()
+    
+    # Use province override if provided
+    if province:
+        user_province = province.lower()
+    else:
+        user_province = user_province.lower()
     
     # Ottieni film visti dall'utente per filtraggio
     user_watched = list(movies_collection.find({"user_id": current_user_id}, {"name": 1}))
@@ -870,7 +896,7 @@ async def get_cinema_films(
         
         # Costruisci oggetto film
         film = {
-            "id": showtime.get("film_id", ""),
+            "id": str(showtime.get("film_id", "")) if showtime.get("film_id") else "",
             "title": film_title,
             "original_title": film_original_title,
             "director": director,

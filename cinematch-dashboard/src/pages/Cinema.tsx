@@ -58,6 +58,8 @@ export function Cinema() {
     const [films, setFilms] = useState<CinemaFilm[]>([]);
     const [selectedFilm, setSelectedFilm] = useState<CinemaFilm | null>(null);
     const [province, setProvince] = useState<string>('');
+    const [availableProvinces, setAvailableProvinces] = useState<{ slug: string, name: string }[]>([]);
+    const [selectedProvince, setSelectedProvince] = useState<string>('');
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [isWatchedModalOpen, setIsWatchedModalOpen] = useState(false);
@@ -71,6 +73,22 @@ export function Cinema() {
     const [selectedDate, setSelectedDate] = useState<string>('');
     const [availableDates, setAvailableDates] = useState<string[]>([]);
     const [todayDate, setTodayDate] = useState<string>('');
+
+    // Fetch available provinces on mount
+    useEffect(() => {
+        const fetchProvinces = async () => {
+            try {
+                const response = await fetch('http://localhost:8000/cinema/provinces');
+                if (response.ok) {
+                    const data = await response.json();
+                    setAvailableProvinces(data.provinces || []);
+                }
+            } catch (err) {
+                console.error('Error fetching provinces:', err);
+            }
+        };
+        fetchProvinces();
+    }, []);
 
     useEffect(() => {
         // Fetch available dates on mount
@@ -86,6 +104,7 @@ export function Cinema() {
                     const data = await response.json();
                     setAvailableDates(data.available_dates || []);
                     setTodayDate(data.today);
+                    setSelectedProvince(data.province || '');
                     // Start with newest available date (last in array)
                     const newestDate = data.available_dates?.length > 0
                         ? data.available_dates[data.available_dates.length - 1]
@@ -104,9 +123,9 @@ export function Cinema() {
 
     useEffect(() => {
         if (selectedDate) {
-            fetchCinemaFilms(selectedDate);
+            fetchCinemaFilms(selectedDate, selectedProvince);
         }
-    }, [selectedDate]);
+    }, [selectedDate, selectedProvince]);
 
     // Poll for progress when refreshing
     useEffect(() => {
@@ -162,11 +181,15 @@ export function Cinema() {
         return () => clearInterval(interval);
     }, [isRefreshing, isSyncing]);
 
-    const fetchCinemaFilms = async (forDate?: string) => {
+    const fetchCinemaFilms = async (forDate?: string, forProvince?: string) => {
         try {
             const token = localStorage.getItem('token');
-            const dateParam = forDate ? `?date=${forDate}` : '';
-            const response = await fetch(`http://localhost:8000/cinema/films${dateParam}`, {
+            const params = new URLSearchParams();
+            if (forDate) params.append('date', forDate);
+            if (forProvince) params.append('province', forProvince);
+            const queryString = params.toString() ? `?${params.toString()}` : '';
+
+            const response = await fetch(`http://localhost:8000/cinema/films${queryString}`, {
                 headers: {
                     'Authorization': `Bearer ${token}`
                 }
@@ -180,6 +203,8 @@ export function Cinema() {
                 setIsRefreshing(data.is_refreshing);
                 if (data.films.length > 0) {
                     setSelectedFilm(data.films[0]);
+                } else {
+                    setSelectedFilm(null);
                 }
             } else {
                 setError('Errore nel caricamento dei film');
@@ -312,8 +337,17 @@ export function Cinema() {
                         ▶
                     </button>
                 </div>
-                <p>
-                    Film in programmazione a <strong>{province}</strong>
+                <div className="province-row">
+                    <span>Film in programmazione a </span>
+                    <select
+                        className="province-selector"
+                        value={selectedProvince}
+                        onChange={(e) => setSelectedProvince(e.target.value)}
+                    >
+                        {availableProvinces.map(p => (
+                            <option key={p.slug} value={p.slug}>{p.name}</option>
+                        ))}
+                    </select>
                     {isRefreshing && (
                         <span className="refreshing-badge">
                             🔄 Aggiornamento in corso {refreshProgress}%{refreshProvince && ` - ${refreshProvince}`}
@@ -324,7 +358,7 @@ export function Cinema() {
                             🎬 Recupero film{syncFilm && `: ${syncFilm}`}
                         </span>
                     )}
-                </p>
+                </div>
             </div>
 
             <div className="cinema-layout">

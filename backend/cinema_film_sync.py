@@ -165,6 +165,63 @@ class CinemaFilmSync:
             
         return None
 
+    def search_by_director(self, director: str, movie_title: str) -> dict:
+        """
+        Fallback "nucleare": Cerca il regista, scarica la sua filmografia completa 
+        e cerca il titolo all'interno. Utile per film futuri o con titoli difficili.
+        """
+        if not director or not movie_title:
+            return None
+            
+        try:
+            # 1. Cerca ID regista
+            url_person = f"{TMDB_BASE_URL}/search/person"
+            params_p = {"api_key": self.api_key, "query": director}
+            resp_p = requests.get(url_person, params=params_p, timeout=10)
+            people = resp_p.json().get("results", [])
+            
+            if not people:
+                return None
+                
+            pid = people[0]['id']
+            
+            # 2. Scarica filmografia (credits)
+            # Proviamo in italiano per massimizzare match con titolo italiano
+            url_credits = f"{TMDB_BASE_URL}/person/{pid}/movie_credits"
+            params_c = {"api_key": self.api_key, "language": "it-IT"} 
+            resp_c = requests.get(url_credits, params=params_c, timeout=10)
+            crew = resp_c.json().get('crew', [])
+            
+            # Filtra solo quelli diretti
+            directed_movies = [m for m in crew if m.get('job') == 'Director']
+            
+            norm_target = self.normalize_title(movie_title)
+            
+            # 3. Cerca match
+            for m in directed_movies:
+                m_title = m.get('title', '')
+                m_orig = m.get('original_title', '')
+                
+                # Match esatto normalizzato
+                if self.normalize_title(m_title) == norm_target:
+                    print(f"    🎯 Trovato via regista: {m_title} (ID: {m['id']})")
+                    return m
+                if self.normalize_title(m_orig) == norm_target:
+                    print(f"    🎯 Trovato via regista: {m_title} [Orig: {m_orig}] (ID: {m['id']})")
+                    return m
+                    
+                # Match fuzzy/contenimento (solo se lunghezza decente per evitare falsi positivi)
+                norm_m = self.normalize_title(m_title)
+                if len(norm_target) > 5 and (norm_target in norm_m or norm_m in norm_target):
+                    print(f"    🎯 Trovato via regista (fuzzy): {m_title} (ID: {m['id']})")
+                    return m
+            
+            return None
+            
+        except Exception as e:
+            print(f"    ⚠️ Errore search_by_director: {e}")
+            return None
+
     def search_tmdb(self, title: str, director: str = None, year: int = None) -> dict:
         """
         Cerca un film su TMDB con logica robusta:
@@ -247,6 +304,13 @@ class CinemaFilmSync:
                 except Exception as e:
                     print(f"    ⚠️ Errore ricerca TMDB ({query}, {lang}): {e}")
         
+        # Se tutte le ricerche standard falliscono e abbiamo un regista, tentiamo il fallback
+        if director:
+            print(f"    ⚠️ Titolo non trovato, provo ricerca via filmografia regista: {director}...")
+            director_result = self.search_by_director(director, title)
+            if director_result:
+                return director_result
+
         return None
     
     def fetch_full_details(self, tmdb_id: int) -> dict:

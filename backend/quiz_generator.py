@@ -41,6 +41,7 @@ class QuizQuestionSchema(BaseModel):
     correct: str = Field(description="The id of the correct answer (a, b, c, or d)")
     explanation: str = Field(description="Detailed explanation of why the answer is correct")
     category: str = Field(description="Category: plot, cast, trivia, or year")
+    difficulty: str = Field(description="Difficulty level: easy, medium, or hard")
 
 def ensure_indexes():
     """Crea gli indici per ottimizzare le query."""
@@ -213,6 +214,7 @@ REGOLE CRITICHE:
 5. Spiegazione che AGGIUNGE informazioni (non ripete la domanda)
 6. Italiano grammaticalmente perfetto: "Qual è" (non "Quale è")
 7. Lunghezza ottimale: domanda 30-150 caratteri, risposte 10-80 caratteri
+8. Valuta la difficoltà: "easy", "medium", o "hard"
 
 ESEMPIO ECCELLENTE:
 {{
@@ -225,7 +227,8 @@ ESEMPIO ECCELLENTE:
   ],
   "correct": "c",
   "explanation": "Il protagonista viene ricattato dall'antagonista con prove compromettenti, costringendolo a tradire il suo amico per proteggere la sua reputazione.",
-  "category": "plot"
+  "category": "plot",
+  "difficulty": "medium"
 }}
 
 GENERA ORA IL TUO QUIZ (output SOLO JSON valido, nessun altro testo):
@@ -270,7 +273,7 @@ GENERA ORA IL TUO QUIZ (output SOLO JSON valido, nessun altro testo):
             ],
             "explanation": data.explanation,
             "category": data.category,
-            "difficulty": "medium",
+            "difficulty": data.difficulty,
             "quiz_date": datetime.now(pytz.timezone('Europe/Rome')).strftime("%Y-%m-%d"),
             "created_at": datetime.now(pytz.timezone('Europe/Rome')),
             "used_count": 0,
@@ -283,7 +286,7 @@ GENERA ORA IL TUO QUIZ (output SOLO JSON valido, nessun altro testo):
             logger.debug(f"Raw response: {response_text[:200]}")
         return None
 
-async def generate_quiz_question(movie: Dict, max_retries: int = 3) -> Optional[Dict]:
+async def generate_quiz_question(movie: Dict, max_retries: int = 5) -> Optional[Dict]:
     """Genera con retry logic."""
     for attempt in range(max_retries):
         q = await _generate_single_question(movie)
@@ -389,17 +392,13 @@ if __name__ == "__main__":
         
         n = 5
         movies = get_random_movies(n * 2)
-        filename = "generated_questions.json"
-        
-        with open(filename, "w", encoding="utf-8") as f:
-            json.dump([], f)
         
         start_time = time.time()
-        all_questions = []
+        generated_questions = []
         failed = 0
         
         for i, movie in enumerate(movies):
-            if len(all_questions) >= n:
+            if len(generated_questions) >= n:
                 break
                 
             print(f"\n[{i+1}/{n}] {movie.get('title')} ({movie.get('year')})")
@@ -409,13 +408,14 @@ if __name__ == "__main__":
             q_time = time.time() - q_start
             
             if q:
-                all_questions.append(q)
+                generated_questions.append(q)
                 
-                with open(filename, "w", encoding="utf-8") as f:
-                    json.dump(all_questions, f, indent=2, default=str, ensure_ascii=False)
+                # Salva immediatamente nel DB per sicurezza
+                save_questions_to_db([q])
                 
-                print(f"  ✅ Generated in {q_time:.2f}s")
+                print(f"  ✅ Generated & Saved in {q_time:.2f}s")
                 print(f"     Q: {q['question'][:65]}...")
+                print(f"     Diff: {q['difficulty']}")
                 print(f"     ✓: {next(a['text'] for a in q['answers'] if a['isCorrect'])[:50]}...")
             else:
                 failed += 1
@@ -424,17 +424,17 @@ if __name__ == "__main__":
         total_time = time.time() - start_time
         
         print(f"\n{'='*70}")
-        if all_questions:
-            success_rate = len(all_questions) / (len(all_questions) + failed) * 100
-            print(f"  ✅ SUCCESS: {len(all_questions)}/{n} questions generated")
+        if generated_questions:
+            success_rate = len(generated_questions) / (len(generated_questions) + failed) * 100
+            print(f"  ✅ SUCCESS: {len(generated_questions)}/{n} questions generated & saved")
             print(f"  ⏱️  Total: {total_time:.2f}s")
-            print(f"  📊 Average: {total_time/len(all_questions):.2f}s per question")
+            print(f"  📊 Average: {total_time/len(generated_questions):.2f}s per question")
             print(f"  ✓  Success rate: {success_rate:.0f}%")
         else:
             print(f"  ❌ FAILED: No valid questions generated")
             print(f"  ⏱️  Time: {total_time:.2f}s")
         
-        print(f"  💾 Saved to: {filename}")
+        print(f"  💾 Saved to: MongoDB (quiz_questions)")
         print(f"{'='*70}\n")
             
     asyncio.run(test())
