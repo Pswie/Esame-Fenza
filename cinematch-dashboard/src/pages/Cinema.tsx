@@ -29,6 +29,7 @@ interface CinemaFilm {
     actors?: string;
     cinemas: CinemaInfo[];
     province: string;
+    imdb_id?: string;
 }
 
 interface CinemaResponse {
@@ -105,17 +106,28 @@ export function Cinema() {
                     setAvailableDates(data.available_dates || []);
                     setTodayDate(data.today);
                     setSelectedProvince(data.province || '');
-                    // Start with newest available date (last in array)
+
                     const newestDate = data.available_dates?.length > 0
                         ? data.available_dates[data.available_dates.length - 1]
                         : data.today;
-                    setSelectedDate(newestDate);
+
+                    if (newestDate) {
+                        setSelectedDate(newestDate);
+                    } else {
+                        // Edge case: No dates and no today? Stop loading.
+                        console.warn("No dates available");
+                        setLoading(false);
+                        setError("Nessuna data disponibile");
+                    }
+                } else {
+                    throw new Error("Failed to fetch dates");
                 }
             } catch (err) {
                 console.error('Error fetching dates:', err);
                 const today = new Date().toISOString().split('T')[0];
                 setSelectedDate(today);
                 setTodayDate(today);
+                // The useEffect for selectedDate will trigger fetchCinemaFilms -> stops loading.
             }
         };
         fetchDates();
@@ -133,41 +145,45 @@ export function Cinema() {
 
         const pollProgress = async () => {
             try {
-                const response = await fetch('http://localhost:8000/cinema/progress');
+                const response = await fetch('http://localhost:8000/cinema/status');
                 if (response.ok) {
                     const data = await response.json();
                     setRefreshProgress(data.percentage);
                     setRefreshProvince(data.current_province);
 
-                    // Check sync status
-                    if (data.sync) {
-                        setIsSyncing(data.sync.status === 'running');
-                        setSyncFilm(data.sync.current_film || '');
-                    }
+                    // If completed, refresh the films list and navigate to today
+                    if (data.status === 'completed' || data.status === 'idle') {
+                        // Only stop if we were actually ensuring a refresh
+                        // But polling runs every 2s. If status is IDLE, we should stop unless we just started.
+                        // We need to differentiate "Idle before start" vs "Idle after finish".
+                        // Logic: pollProgress is defined. We need to handle "completed" state.
 
-                    // If both completed, refresh the films list and navigate to today
-                    if (data.status === 'completed' && (!data.sync || data.sync.status !== 'running')) {
-                        setIsRefreshing(false);
-                        setIsSyncing(false);
-                        setRefreshProgress(0);
-                        // Refetch dates and navigate to today
-                        setTimeout(async () => {
-                            try {
-                                const token = localStorage.getItem('token');
-                                const datesResponse = await fetch('http://localhost:8000/cinema/dates', {
-                                    headers: { 'Authorization': `Bearer ${token}` }
-                                });
-                                if (datesResponse.ok) {
-                                    const datesData = await datesResponse.json();
-                                    setAvailableDates(datesData.available_dates || []);
-                                    setTodayDate(datesData.today);
-                                    // Auto-navigate to today
-                                    setSelectedDate(datesData.today);
+                        // Check if we reached 100% or explicitly confirmation of completion
+                        if (data.status === 'completed' || (data.status === 'idle' && refreshProgress > 90)) {
+                            setIsRefreshing(false);
+                            setIsSyncing(false);
+                            setRefreshProgress(0);
+                            // Refetch dates and navigate to today
+                            setTimeout(async () => {
+                                try {
+                                    const token = localStorage.getItem('token');
+                                    const datesResponse = await fetch('http://localhost:8000/cinema/dates', {
+                                        headers: { 'Authorization': `Bearer ${token}` }
+                                    });
+                                    if (datesResponse.ok) {
+                                        const datesData = await datesResponse.json();
+                                        setAvailableDates(datesData.available_dates || []);
+                                        setTodayDate(datesData.today);
+                                        // Auto-navigate to today
+                                        setSelectedDate(datesData.today);
+                                        // Also fetch films for today
+                                        fetchCinemaFilms(datesData.today, selectedProvince);
+                                    }
+                                } catch (err) {
+                                    console.error('Error refreshing dates:', err);
                                 }
-                            } catch (err) {
-                                console.error('Error refreshing dates:', err);
-                            }
-                        }, 1000);
+                            }, 1000);
+                        }
                     }
                 }
             } catch (err) {
@@ -179,7 +195,25 @@ export function Cinema() {
         const interval = setInterval(pollProgress, 2000); // Poll every 2 seconds
 
         return () => clearInterval(interval);
-    }, [isRefreshing, isSyncing]);
+    }, [isRefreshing, isSyncing, refreshProgress]);
+
+    const handleRefreshClick = async () => {
+        try {
+            setIsRefreshing(true);
+            setRefreshProgress(0);
+
+            const token = localStorage.getItem('token');
+            await fetch(`http://localhost:8000/cinema/refresh?province=${selectedProvince}`, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${token}`
+                }
+            });
+        } catch (err) {
+            console.error("Refresh failed", err);
+            setIsRefreshing(false);
+        }
+    };
 
     const fetchCinemaFilms = async (forDate?: string, forProvince?: string) => {
         try {
@@ -200,7 +234,8 @@ export function Cinema() {
                 setFilms(data.films);
                 setProvince(data.province);
                 setLastUpdate(data.last_update);
-                setIsRefreshing(data.is_refreshing);
+                // Don't override refreshing state from server unless useful, local state is better for immediate feedback
+                // setIsRefreshing(data.is_refreshing); 
                 if (data.films.length > 0) {
                     setSelectedFilm(data.films[0]);
                 } else {
@@ -216,101 +251,93 @@ export function Cinema() {
         }
     };
 
-    const handleAddToWatched = async (rating: number, comment: string) => {
-        if (!selectedFilm) return;
+    // ... (rest of methods)
 
-        try {
-            await catalogAPI.addOrUpdateMovie({
-                name: selectedFilm.title,
-                year: selectedFilm.year || new Date().getFullYear(),
-                rating: rating,
-                comment: comment,
-                poster_url: selectedFilm.poster
-            });
+    // Helper conditions
+    // Show refresh button if today is NOT in available dates
+    const isTodayMissing = !availableDates.includes(todayDate);
 
-            // Rimuovi il film dalla lista locale poiché ora è visto
-            const updatedFilms = films.filter(f => f.id !== selectedFilm.id);
-            setFilms(updatedFilms);
-            if (updatedFilms.length > 0) {
-                setSelectedFilm(updatedFilms[0]);
-            } else {
-                setSelectedFilm(null);
-            }
-            setIsWatchedModalOpen(false);
-        } catch (error) {
-            console.error("Errore salvataggio film visto:", error);
-            throw error;
-        }
-    };
+    // ... (render)
 
-    // Date navigation functions - jump to available dates
-    const currentIndex = availableDates.indexOf(selectedDate);
-
+    // Navigation handlers
     const goToPreviousDay = () => {
+        const currentIndex = availableDates.indexOf(selectedDate);
         if (currentIndex > 0) {
             setSelectedDate(availableDates[currentIndex - 1]);
         }
     };
 
     const goToNextDay = () => {
+        const currentIndex = availableDates.indexOf(selectedDate);
         if (currentIndex < availableDates.length - 1) {
             setSelectedDate(availableDates[currentIndex + 1]);
         }
     };
 
-    const formatDisplayDate = (dateStr: string) => {
-        if (!dateStr) return '';
-        const date = new Date(dateStr);
-        const options: Intl.DateTimeFormatOptions = { weekday: 'long', day: 'numeric', month: 'long' };
-        return date.toLocaleDateString('it-IT', options);
+    const handleAddToWatched = async (rating: number, review: string) => {
+        if (!selectedFilm) return;
+
+        try {
+            const token = localStorage.getItem('token');
+            const payload = {
+                name: selectedFilm.title,
+                year: selectedFilm.year,
+                rating: rating,
+                date: new Date().toISOString().split('T')[0],
+                review: review,
+                // Link al catalogo per dati completi
+                imdb_id: selectedFilm.imdb_id
+            };
+
+            const response = await fetch('http://localhost:8000/movies', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(payload)
+            });
+
+            if (response.ok) {
+                setIsWatchedModalOpen(false);
+
+                // Filtra via il film appena visto
+                const remainingFilms = films.filter(f => f.id !== selectedFilm.id);
+                setFilms(remainingFilms);
+
+                // Seleziona automaticamente il prossimo film con il rating più alto
+                if (remainingFilms.length > 0) {
+                    // Ordina per rating decrescente
+                    const bestFilm = remainingFilms.reduce((prev: CinemaFilm, current: CinemaFilm) => {
+                        const prevRating = prev.rating || 0;
+                        const currRating = current.rating || 0;
+                        return prevRating >= currRating ? prev : current;
+                    });
+
+                    setSelectedFilm(bestFilm);
+                } else {
+                    setSelectedFilm(null);
+                }
+            } else {
+                console.error("Errore salvataggio film");
+                alert("Si è verificato un errore durante il salvataggio.");
+            }
+        } catch (err) {
+            console.error(err);
+            alert("Errore di connessione.");
+        }
     };
 
-    const isToday = selectedDate === todayDate;
+    const formatDisplayDate = (isoDate: string) => {
+        if (!isoDate) return '';
+        const d = new Date(isoDate);
+        return d.toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric', month: 'short' });
+    };
+
+    const currentIndex = availableDates.indexOf(selectedDate);
     const canGoPrevious = currentIndex > 0;
     const canGoNext = currentIndex < availableDates.length - 1;
-
-    if (loading) {
-        return (
-            <div className="cinema-page">
-                <div className="cinema-loading">
-                    <div className="loading-spinner"></div>
-                    <p>Caricamento film in sala...</p>
-                </div>
-            </div>
-        );
-    }
-
-    if (error || films.length === 0) {
-        return (
-            <div className="cinema-page">
-                <div className="page-header">
-                    <h1>🎭 Al Cinema Ora</h1>
-                    <div className="date-navigation">
-                        <button
-                            className="date-nav-btn"
-                            onClick={goToPreviousDay}
-                            disabled={!canGoPrevious}
-                            title="Giorno precedente"
-                        >
-                            ◀
-                        </button>
-                        <span className="current-date">
-                            {isToday ? 'Oggi' : formatDisplayDate(selectedDate)}
-                        </span>
-                        <button
-                            className="date-nav-btn"
-                            onClick={goToNextDay}
-                            disabled={!canGoNext}
-                            title="Giorno successivo"
-                        >
-                            ▶
-                        </button>
-                    </div>
-                    <p>{error || 'Nessun film in programmazione per questa data'}</p>
-                </div>
-            </div>
-        );
-    }
+    const isToday = selectedDate === todayDate;
 
     return (
         <div className="cinema-page">
@@ -336,6 +363,27 @@ export function Cinema() {
                     >
                         ▶
                     </button>
+
+                    {/* Manual Refresh Button */}
+                    {(isTodayMissing || isRefreshing) && (
+                        <button
+                            className={`refresh-btn ${isRefreshing ? 'spinning' : ''}`}
+                            onClick={handleRefreshClick}
+                            disabled={isRefreshing}
+                            title="Aggiorna programmazione film"
+                            style={{
+                                marginLeft: '15px',
+                                backgroundColor: isRefreshing ? '#666' : '#E50914',
+                                color: 'white',
+                                border: 'none',
+                                borderRadius: '4px',
+                                padding: '5px 10px',
+                                cursor: isRefreshing ? 'wait' : 'pointer'
+                            }}
+                        >
+                            {isRefreshing ? '🔄 ...' : '🔄 Aggiorna Film'}
+                        </button>
+                    )}
                 </div>
                 <div className="province-row">
                     <span>Film in programmazione a </span>
@@ -350,7 +398,7 @@ export function Cinema() {
                     </select>
                     {isRefreshing && (
                         <span className="refreshing-badge">
-                            🔄 Aggiornamento in corso {refreshProgress}%{refreshProvince && ` - ${refreshProvince}`}
+                            🔄 Aggiornamento in corso {refreshProgress}%
                         </span>
                     )}
                     {isSyncing && (

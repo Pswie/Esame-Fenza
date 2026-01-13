@@ -22,6 +22,8 @@ from pydantic import BaseModel
 from typing import Optional, List, Dict
 from auth import get_password_hash, verify_password, create_access_token, get_current_user_id
 from quiz_generator import get_daily_questions, run_daily_quiz_generation
+from scrape_comingsoon import run_scraper
+from cinema_film_sync import sync_films_to_catalog
 from kafka_producer import get_kafka_producer
 
 # ============================================
@@ -206,7 +208,7 @@ async def startup_event():
     scheduler.add_job(scheduled_movie_updater, 'cron', hour=1, minute=0, timezone=italy_tz, id='movie_updater')
     
     # --- SCHEDULER CINEMA CAMPANIA ---
-    from scrape_comingsoon import main as run_cinema_scraper
+    from scrape_comingsoon import run_scraper as run_cinema_scraper
     from cinema_film_sync import sync_films_to_catalog
     
     def run_cinema_sync_with_lock():
@@ -605,6 +607,58 @@ async def get_cinema_dates(current_user_id: str = Depends(get_current_user_id)):
         "province": user_province
     }
 
+@app.post("/cinema/refresh")
+async def refresh_cinema_data(background_tasks: BackgroundTasks, province: str = "napoli"):
+    """
+    Avvia manualmente lo scraping e la sincronizzazione dei film al cinema.
+    Esegue in background: Scrape -> Sync.
+    """
+    async def run_refresh_task(prov_slug: str):
+        try:
+            # Stats tracker
+            status_collection = db["scraper_progress"]
+            
+            # 1. Scrape
+            print(f"🔄 [Manual Refresh] Scraper started for {prov_slug}...")
+            # Note: run_scraper currently scrapes ALL provinces in CAMPANIA_PROVINCES
+            # We can update run_scraper to accept a province list if needed, 
+            # but for now running fully is safer to ensure consistency.
+            # Running in threadpool to avoid blocking event loop
+            await run_in_threadpool(run_scraper)
+            
+            # 2. Sync
+            print(f"🔄 [Manual Refresh] Sync started...")
+            await run_in_threadpool(sync_films_to_catalog)
+            
+            print(f"✅ [Manual Refresh] Completed.")
+            
+        except Exception as e:
+            print(f"❌ [Manual Refresh] Error: {e}")
+
+    background_tasks.add_task(run_refresh_task, province)
+    
+    return {
+        "status": "refreshing",
+        "message": "Aggiornamento dati cinema avviato in background"
+    }
+
+@app.get("/cinema/status")
+async def get_cinema_status():
+    """Ottiene lo stato dello scraper."""
+    try:
+        progress = db["scraper_progress"].find_one({"_id": "cinema_scraper"})
+        if not progress:
+            return {"status": "idle", "percentage": 0}
+            
+        return {
+            "status": progress.get("status", "idle"),
+            "percentage": progress.get("percentage", 0),
+            "current_province": progress.get("current_province", ""),
+            "updated_at": progress.get("updated_at")
+        }
+    except Exception as e:
+        return {"status": "error", "details": str(e)}
+
 @app.get("/cinema/provinces")
 async def get_cinema_provinces():
     """Ottiene la lista delle province disponibili nel database showtimes."""
@@ -659,7 +713,7 @@ async def get_cinema_films(
             # If data is from before today AND scraper is not already running, trigger a background rescrape
             if last_update_date.replace(tzinfo=None) < today and not is_scraper_running:
                 print(f"📅 [Cinema] Dati obsoleti ({last_update_date.date()} < {today.date()}), avvio scrape in background...")
-                from scrape_comingsoon import main as run_cinema_scraper
+                from scrape_comingsoon import run_scraper as run_cinema_scraper
                 from cinema_film_sync import sync_films_to_catalog
                 
                 def refresh_cinema_data():
@@ -680,7 +734,7 @@ async def get_cinema_films(
     else:
         # No showtimes at all, trigger scrape
         print("📅 [Cinema] Nessun dato presente, avvio scrape in background...")
-        from scrape_comingsoon import main as run_cinema_scraper
+        from scrape_comingsoon import run_scraper as run_cinema_scraper
         from cinema_film_sync import sync_films_to_catalog
         
         def refresh_cinema_data():
@@ -745,16 +799,16 @@ async def get_cinema_films(
             if result:
                 return result
             
-            # Match parziale su titoli lunghi
-            if len(norm) > 8:
-                result = movies_catalog.find_one({
-                    "$or": [
-                        {"normalized_title": {"$regex": f".*{re.escape(norm)}.*"}},
-                        {"normalized_original_title": {"$regex": f".*{re.escape(norm)}.*"}}
-                    ]
-                }, projection)
-                if result:
-                    return result
+            # Match parziale su titoli lunghi (DISABLED FOR PERFORMANCE)
+            # if len(norm) > 8:
+            #     result = movies_catalog.find_one({
+            #         "$or": [
+            #             {"normalized_title": {"$regex": f".*{re.escape(norm)}.*"}},
+            #             {"normalized_original_title": {"$regex": f".*{re.escape(norm)}.*"}}
+            #         ]
+            #     }, projection)
+            #     if result:
+            #         return result
 
         return None
 
@@ -842,7 +896,7 @@ async def get_cinema_films(
     projection = {
         "poster_url": 1, "description": 1, "avg_vote": 1, 
         "genres": 1, "year": 1, "duration": 1, "actors": 1, 
-        "director": 1, "normalized_title": 1, "normalized_original_title": 1, "_id": 0
+        "director": 1, "normalized_title": 1, "normalized_original_title": 1, "imdb_id": 1, "_id": 0
     }
     
     catalog_results = list(movies_catalog.find({
@@ -908,7 +962,8 @@ async def get_cinema_films(
             "duration": catalog_info.get("duration") if catalog_info else None,
             "actors": catalog_info.get("actors") if catalog_info else None,
             "cinemas": formatted_cinemas,
-            "province": showtime.get("province", "")
+            "province": showtime.get("province", ""),
+            "imdb_id": catalog_info.get("imdb_id") if catalog_info else None
         }
         
         # Fallback poster se non trovato
@@ -1242,6 +1297,54 @@ async def get_global_trends():
         
     return mongo_to_dict(trends)
 
+class MovieCreate(BaseModel):
+    name: str
+    year: Optional[int] = None
+    rating: int
+    date: Optional[str] = None
+    review: Optional[str] = None
+    imdb_id: Optional[str] = None # Link forte al catalogo
+
+@app.post("/movies")
+async def add_movie(movie: MovieCreate, background_tasks: BackgroundTasks, current_user_id: str = Depends(get_current_user_id)):
+    """Aggiunge un singolo film alla lista dei visti."""
+    
+    entry = {
+        "user_id": current_user_id,
+        "name": movie.name,
+        "year": movie.year,
+        "rating": movie.rating,
+        "date": movie.date or datetime.now(italy_tz).strftime("%Y-%m-%d"),
+        "review": movie.review,
+        "imdb_id": movie.imdb_id,
+        "added_at": datetime.now(italy_tz).isoformat()
+    }
+    
+    result = movies_collection.insert_one(entry)
+    
+    # Aggiorna utente (interazione)
+    users_collection.update_one(
+        {"user_id": current_user_id},
+        {"$set": {
+            "has_data": True,
+            "data_updated_at": datetime.now(italy_tz).isoformat(),
+            "last_interaction": datetime.now(italy_tz).isoformat()
+        }}
+    )
+    
+    # Triggera ricalcolo statistiche via Spark
+    # Recupera tutti i film per inviare evento completo
+    all_movies = list(movies_collection.find({"user_id": current_user_id}))
+    
+    try:
+        kafka_producer = get_kafka_producer()
+        kafka_producer.send_batch_event("RECALCULATE", current_user_id, all_movies)
+    except Exception as e:
+        print(f"⚠️ Errore invio Kafka: {e}")
+    
+    return {"id": str(result.inserted_id), "message": "Film aggiunto correttamente"}
+
+
 @app.get("/movies")
 async def get_movies(current_user_id: str = Depends(get_current_user_id)):
     """Ottiene tutti i film dell'utente (per pagina Film Visti)."""
@@ -1534,80 +1637,111 @@ async def get_user_movies(
         {"_id": 0, "user_id": 0}
     ).sort("added_at", -1).skip(skip).limit(limit))
     
-    # Step 2: Raccogli TUTTI i titoli per un batch lookup (per garantire dati aggiornati dal catalogo)
+    # Step 2: Raccogli TUTTI i titoli e ID per un batch lookup garantito
     titles_to_lookup = []
+    ids_to_lookup = []
+    
     for movie in user_movies:
+        if movie.get("imdb_id"):
+            ids_to_lookup.append(movie["imdb_id"])
+        
         titles_to_lookup.append({
             "title": movie["name"].lower(),
             "year": movie.get("year")
         })
     
-    # Step 3: Batch lookup nel catalogo (una sola query)
-    if titles_to_lookup:
-        # Crea indice per ricerca veloce
-        catalog_cache = {}
+    # Step 3: Batch lookup nel catalogo
+    catalog_cache = {}
+    
+    if titles_to_lookup or ids_to_lookup:
+        # Costruisci query
+        query_parts = []
         
-        # Query batch per tutti i titoli - usa $in per ricerca esatta (più veloce)
-        title_list = list(set(t["title"] for t in titles_to_lookup))
-        
-        # Fai chunking se la lista è troppo lunga per evitare regex giganti
-        # MongoDB regex ha limiti, meglio fare più query se necessario
-        # Ma per ora assumiamo che limit=500 sia gestibile
-        import re
-        escaped_titles = [re.escape(t) for t in title_list]
-        regex_pattern = f"^({'|'.join(escaped_titles)})$"
-        
-        catalog_movies = movies_catalog.find(
-            {
+        # A. Cerca per ID esatto (priorità massima)
+        if ids_to_lookup:
+            query_parts.append({"imdb_id": {"$in": ids_to_lookup}})
+            
+        # B. Cerca per Titolo (fallback)
+        if titles_to_lookup:
+            title_list = list(set(t["title"] for t in titles_to_lookup))
+            import re
+            escaped_titles = [re.escape(t) for t in title_list]
+            regex_pattern = f"^({'|'.join(escaped_titles)})$"
+            
+            query_parts.append({
                 "$or": [
                     {"title": {"$regex": regex_pattern, "$options": "i"}},
                     {"original_title": {"$regex": regex_pattern, "$options": "i"}},
-                    {"english_title": {"$regex": regex_pattern, "$options": "i"}} # Supporto per titoli inglesi
+                    {"english_title": {"$regex": regex_pattern, "$options": "i"}}
                 ]
-            },
+            })
+        
+        catalog_movies = movies_catalog.find(
+            {"$or": query_parts} if query_parts else {},
             {"title": 1, "original_title": 1, "english_title": 1, "year": 1, "poster_url": 1, "imdb_id": 1, "genres": 1, "description": 1, "director": 1, "actors": 1, "votes": 1, "avg_vote": 1, "duration": 1}
         )
         
-        # Costruisci cache con chiave title_year
+        # Costruisci cache intelligente
         for cm in catalog_movies:
             # Helper per aggiungere alla cache con logica di "miglior match"
-            def add_to_cache(t, y, movie):
-                if not t: return
-                t_lower = t.lower()
+            def add_to_cache(key, movie):
+                if not key: return
                 
                 # Helper interno per decidere se sostituire un'entry esistente
-                def should_replace(current, new):
-                    if not current: return True
-                    # Preferiamo entry con poster reale rispetto a stock
-                    curr_has_poster = current.get('poster_url') and STOCK_POSTER_URL not in current.get('poster_url', '')
-                    new_has_poster = new.get('poster_url') and STOCK_POSTER_URL not in new.get('poster_url', '')
-                    if new_has_poster and not curr_has_poster: return True
-                    if curr_has_poster and not new_has_poster: return False
-                    # A parità di poster, preferiamo quello con più voti
-                    return (new.get('votes', 0) or 0) > (current.get('votes', 0) or 0)
+                # (Se abbiamo già un match per "Avatar", vogliamo il migliore)
+                current = catalog_cache.get(key)
+                if not current: 
+                    catalog_cache[key] = movie
+                    return
 
-                # Key con anno
-                key_year = f"{t_lower}_{y}"
-                if should_replace(catalog_cache.get(key_year), movie):
-                    catalog_cache[key_year] = movie
+                # Preferiamo entry con poster reale
+                curr_has_poster = current.get('poster_url') and STOCK_POSTER_URL not in current.get('poster_url', '')
+                new_has_poster = movie.get('poster_url') and STOCK_POSTER_URL not in movie.get('poster_url', '')
                 
-                # Key solo titolo (fallback)
-                if should_replace(catalog_cache.get(t_lower), movie):
-                    catalog_cache[t_lower] = movie
+                if new_has_poster and not curr_has_poster: 
+                    catalog_cache[key] = movie
+                    return
+                if curr_has_poster and not new_has_poster: 
+                    return
+                    
+                # A parità di poster, preferiamo quello con più voti
+                if (movie.get('votes', 0) or 0) > (current.get('votes', 0) or 0):
+                    catalog_cache[key] = movie
 
-            # Mappa tutte le varianti di titolo
-            add_to_cache(cm.get('title'), cm.get('year', ''), cm)
-            add_to_cache(cm.get('original_title'), cm.get('year', ''), cm)
-            add_to_cache(cm.get('english_title'), cm.get('year', ''), cm)
+            # Mappa tutte le chiavi possibili
+            if cm.get('imdb_id'):
+                add_to_cache(f"id_{cm['imdb_id']}", cm)
+                
+            t = cm.get('title')
+            y = cm.get('year')
+            t_orig = cm.get('original_title')
+            t_eng = cm.get('english_title')
+            
+            if t:
+                add_to_cache(f"{t.lower()}_{y}", cm)
+                add_to_cache(t.lower(), cm)
+            if t_orig:
+                add_to_cache(f"{t_orig.lower()}_{y}", cm)
+                add_to_cache(t_orig.lower(), cm)
+            if t_eng:
+                add_to_cache(f"{t_eng.lower()}_{y}", cm)
+                add_to_cache(t_eng.lower(), cm)
         
         # Step 4: Applica i dati del catalogo ai film utente
         for movie in user_movies:
+            # 1. Prova lookup per ID (Massima precisione)
+            catalog_movie = None
+            if movie.get("imdb_id"):
+                catalog_movie = catalog_cache.get(f"id_{movie['imdb_id']}")
+            
+            # 2. Se fallisce, prova Titolo + Anno
             title_lower = movie["name"].lower()
             year = movie.get("year")
             
-            # Cerca con tolleranza sull'anno (±1) per discrepanze Letterboxd/Catalog (molto comuni)
-            catalog_movie = catalog_cache.get(f"{title_lower}_{year}")
+            if not catalog_movie:
+                catalog_movie = catalog_cache.get(f"{title_lower}_{year}")
             
+            # 3. Fuzzy Year Check e Fallback solo Titolo (come prima)
             if not catalog_movie and year:
                 catalog_movie = catalog_cache.get(f"{title_lower}_{year-1}") or catalog_cache.get(f"{title_lower}_{year+1}")
             

@@ -431,7 +431,7 @@ def clear_progress():
         print(f"⚠️ Errore pulizia progresso: {e}")
 
 
-def main():
+def run_scraper():
     italy_tz = pytz.timezone('Europe/Rome')
     print("=" * 70)
     print("🎬 ComingSoon.it Scraper v6 (titolo orig. + regista)")
@@ -501,4 +501,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    run_scraper()
