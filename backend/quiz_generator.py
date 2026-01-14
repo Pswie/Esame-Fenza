@@ -204,7 +204,7 @@ async def _generate_single_question(movie: Dict) -> Optional[Dict]:
     prompt = f"""Sei un esperto di cinema. Genera un quiz di ECCELLENTE QUALITÀ in ITALIANO PERFETTO.
 
 FILM: "{movie.get('title')}" ({movie.get('year')})
-TRAMA: {movie.get('description', 'N/A')[:350]}
+TRAMA: {(movie.get('description') or 'N/A')[:350]}
 
 REGOLE CRITICHE:
 1. Usa SOLO informazioni presenti nella trama (non inventare dettagli!)
@@ -362,9 +362,12 @@ async def run_daily_quiz_generation(force: bool = False):
     current_status = db.quiz_status.find_one({"_id": "daily_generation"})
     
     if current_status:
-        # 1. Check if already finished today
-        if not force and current_status.get("last_generated_date") == today_str and current_status.get("status") == "FINISHED":
-            logger.info(f"✅ [Quiz] Quiz already generated for {today_str}, skipping.")
+        # 1. Check if already finished today (and has questions)
+        is_done = current_status.get("status") in ["FINISHED", "GENERATED"]
+        has_questions = current_status.get("questions_generated", 0) > 0
+        
+        if not force and current_status.get("last_generated_date") == today_str and is_done and has_questions:
+            logger.info(f"✅ [Quiz] Quiz already generated for {today_str} ({current_status.get('questions_generated')} q), skipping.")
             return
 
         # 2. Check if currently generating
@@ -406,6 +409,8 @@ async def run_daily_quiz_generation(force: bool = False):
             {
                 "$set": {
                     "status": "GENERATING",
+                    "questions_generated": 0,
+                    "error_message": None,
                     "started_at": datetime.now(italy_tz).isoformat()
                 }
             },

@@ -99,23 +99,33 @@ export function Quiz() {
                 const statusRes = await fetch('http://localhost:8000/quiz/status');
                 const statusData = await statusRes.json();
 
-                // Check if generation is complete (FINISHED, ERROR, or any non-GENERATING status)
-                if (statusData.status !== "GENERATING") {
-                    // Generation finished (success or fail), try to get questions
+                // Check if generation is complete
+                if (statusData.status === "FINISHED" || statusData.status === "GENERATED" || statusData.status === "ERROR") {
+                    // Generation finished, try to get questions
                     const qRes = await fetch('http://localhost:8000/quiz/questions');
                     const qData = await qRes.json();
 
-                    if (qData.questions && qData.questions.length > 0) {
+                    let hasQuestions = false;
+                    let newQuestions = [];
+
+                    if (Array.isArray(qData) && qData.length > 0) {
+                        newQuestions = qData;
+                        hasQuestions = true;
+                    } else if (qData.questions && qData.questions.length > 0) {
+                        newQuestions = qData.questions;
+                        hasQuestions = true;
+                    }
+
+                    if (hasQuestions) {
                         clearInterval(pollInterval);
-                        setQuestions(qData.questions);
+                        setQuestions(newQuestions);
                         setLoading(false);
                         setIsGenerating(false);
-                    } else {
-                        // Finished but no questions? Error or empty
+                    } else if (statusData.status !== "GENERATING") {
+                        // If it's not generating but we have no questions, stop polling to avoid infinite loop
                         clearInterval(pollInterval);
                         setLoading(false);
                         setIsGenerating(false);
-                        // Don't set error, just show empty state so user can try again
                     }
                 }
 

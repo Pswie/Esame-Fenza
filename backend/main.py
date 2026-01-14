@@ -2312,8 +2312,8 @@ async def generate_quiz_questions(background_tasks: BackgroundTasks, n: int = 5)
     """
     async def generate_task():
         try:
-            from quiz_generator import run_daily_quiz_generation_v2
-            await run_daily_quiz_generation_v2()
+            from quiz_generator import run_daily_quiz_generation
+            await run_daily_quiz_generation(force=True)
         except Exception as e:
             print(f"❌ Errore generazione quiz: {e}")
     
