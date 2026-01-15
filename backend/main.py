@@ -1879,9 +1879,13 @@ async def update_user_movie(
     })
     
     # Aggiorna timestamp interazione per sync UI
+    # Aggiorna timestamp interazione per sync UI
     users_collection.update_one(
         {"user_id": current_user_id},
-        {"$set": {"last_interaction": datetime.now(italy_tz).isoformat()}}
+        {"$set": {
+            "last_interaction": datetime.now(italy_tz).isoformat(),
+            "data_updated_at": datetime.now(italy_tz).isoformat()
+        }}
     )
     
     # Stats aggiornate via Kafka/Spark
@@ -1914,7 +1918,10 @@ async def remove_movie_from_collection(
         {"user_id": current_user_id},
         {
             "$inc": {"movies_count": -1},
-            "$set": {"last_interaction": datetime.now(italy_tz).isoformat()}
+            "$set": {
+                "last_interaction": datetime.now(italy_tz).isoformat(),
+                "data_updated_at": datetime.now(italy_tz).isoformat()
+            }
         }
     )
     
@@ -1948,9 +1955,13 @@ async def update_movie_rating(
     })
     
     # Aggiorna timestamp interazione per sync UI
+    # Aggiorna timestamp interazione per sync UI
     users_collection.update_one(
         {"user_id": current_user_id},
-        {"$set": {"last_interaction": datetime.now(italy_tz).isoformat()}}
+        {"$set": {
+            "last_interaction": datetime.now(italy_tz).isoformat(),
+            "data_updated_at": datetime.now(italy_tz).isoformat()
+        }}
     )
     
     # Stats aggiornate via Kafka/Spark

@@ -22,6 +22,16 @@ export function CatalogoFilm() {
     const [showAddModal, setShowAddModal] = useState(false);
     const [addingMovie, setAddingMovie] = useState(false);
 
+    // Advanced Search State
+    const [isAdvancedSearch, setIsAdvancedSearch] = useState(false);
+    const [advancedFilters, setAdvancedFilters] = useState({
+        title: '',
+        actor: '',
+        director: '',
+        year: '',
+        genre: ''
+    });
+
     // Stato per il ricalcolo e refresh dati
     const [refreshTrigger, setRefreshTrigger] = useState(0);
 
@@ -235,27 +245,111 @@ export function CatalogoFilm() {
 
             {/* Barra di ricerca */}
             <div className="search-section">
-                <div className="search-box">
-                    <span className="search-icon">🔍</span>
-                    <input
-                        type="text"
-                        placeholder="Cerca un film da aggiungere..."
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        className="search-input"
-                    />
-                    {searchQuery && (
+                <div className="search-header-row">
+                    {!isAdvancedSearch && (
+                        <div className="search-box">
+                            <span className="search-icon">🔍</span>
+                            <input
+                                type="text"
+                                placeholder="Cerca un film da aggiungere..."
+                                value={searchQuery}
+                                onChange={(e) => setSearchQuery(e.target.value)}
+                                className="search-input"
+                            />
+                            {searchQuery && (
+                                <button
+                                    className="clear-search"
+                                    onClick={() => {
+                                        setSearchQuery('');
+                                        setSearchResults([]);
+                                    }}
+                                >
+                                    ✕
+                                </button>
+                            )}
+                        </div>
+                    )}
+
+                    {!isAdvancedSearch && (
                         <button
-                            className="clear-search"
-                            onClick={() => {
-                                setSearchQuery('');
-                                setSearchResults([]);
-                            }}
+                            className="advanced-search-toggle"
+                            onClick={() => setIsAdvancedSearch(true)}
                         >
-                            ✕
+                            Ricerca Avanzata
                         </button>
                     )}
                 </div>
+
+                {isAdvancedSearch && (
+                    <div className="advanced-search-panel">
+                        <div className="advanced-grid">
+                            <div className="input-group">
+                                <label>Titolo</label>
+                                <input
+                                    type="text"
+                                    className="advanced-input"
+                                    placeholder="Es. Inception"
+                                    value={advancedFilters.title}
+                                    onChange={(e) => setAdvancedFilters({ ...advancedFilters, title: e.target.value })}
+                                />
+                            </div>
+                            <div className="input-group">
+                                <label>Attore</label>
+                                <input
+                                    type="text"
+                                    className="advanced-input"
+                                    placeholder="Es. Leonardo DiCaprio"
+                                    value={advancedFilters.actor}
+                                    onChange={(e) => setAdvancedFilters({ ...advancedFilters, actor: e.target.value })}
+                                />
+                            </div>
+                            <div className="input-group">
+                                <label>Regista</label>
+                                <input
+                                    type="text"
+                                    className="advanced-input"
+                                    placeholder="Es. Christopher Nolan"
+                                    value={advancedFilters.director}
+                                    onChange={(e) => setAdvancedFilters({ ...advancedFilters, director: e.target.value })}
+                                />
+                            </div>
+                            <div className="input-group">
+                                <label>Anno</label>
+                                <input
+                                    type="number"
+                                    className="advanced-input"
+                                    placeholder="Es. 2010"
+                                    value={advancedFilters.year}
+                                    onChange={(e) => setAdvancedFilters({ ...advancedFilters, year: e.target.value })}
+                                />
+                            </div>
+                        </div>
+                        <div className="advanced-actions">
+                            <button
+                                className="search-btn-secondary"
+                                onClick={() => {
+                                    setIsAdvancedSearch(false);
+                                    setSearchQuery('');
+                                    setSearchResults([]);
+                                }}
+                            >
+                                Torna alla ricerca semplice
+                            </button>
+                            <button
+                                className="search-btn-primary"
+                                onClick={() => {
+                                    console.log("Searching with filters:", advancedFilters);
+                                    // Fallback to simple title search for now if title is present
+                                    if (advancedFilters.title) {
+                                        searchMovies(advancedFilters.title);
+                                    }
+                                }}
+                            >
+                                Cerca nel Catalogo
+                            </button>
+                        </div>
+                    </div>
+                )}
 
                 {/* Risultati ricerca */}
                 {(searchQuery.length >= 2 || searchResults.length > 0) && (
@@ -267,7 +361,10 @@ export function CatalogoFilm() {
                         ) : searchResults.length > 0 ? (
                             <>
                                 <div className="results-header">
-                                    <span>🎯 {searchResults.length} risultati per "{searchQuery}"</span>
+                                    <span>
+                                        🎯 {searchResults.length} risultati
+                                        {isAdvancedSearch ? ' trovati' : ` per "${searchQuery}"`}
+                                    </span>
                                 </div>
                                 <div className="results-grid">
                                     {searchResults.map((movie) => (

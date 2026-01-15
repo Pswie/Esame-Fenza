@@ -219,14 +219,33 @@ class RecommendationService:
                 "not_recommended": []
             }
         
-        # Check for cached recommendations
+        # 0. Enforce "Spark Stats First" policy
+        # Check if user_stats are up-to-date with user data
         user = self.db["users"].find_one({"user_id": user_id})
+        
+        if user:
+            data_updated = user.get("data_updated_at")
+            if data_updated:
+                # Get stats updated time
+                stats = self.db["user_stats"].find_one({"user_id": user_id}, {"updated_at": 1})
+                stats_updated = stats.get("updated_at") if stats else None
+                
+                # If stats are missing OR stats are older than data update -> Processing
+                if not stats_updated or stats_updated < data_updated:
+                    print(f"⏳ Stats processing: Data {data_updated} > Stats {stats_updated}")
+                    return {
+                        "status": "processing",
+                        "message": "Statistiche in elaborazione. Riprova tra pochi secondi...",
+                        "recommended": [],
+                        "not_recommended": []
+                    }
+
+        # Check for cached recommendations
         if user and not force_refresh:
             cached = user.get("recommendations")
             
             if cached and cached.get("generated_at"):
                 cache_time = cached.get("generated_at")
-                # Check data_updated_at field (set when user adds/modifies films)
                 data_updated = user.get("data_updated_at") or ""
                 
                 print(f"🔍 Cache: generated_at={cache_time}, data_updated_at={data_updated}")
