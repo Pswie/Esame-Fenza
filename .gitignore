@@ -20,3 +20,6 @@ mongo_data/
 
 # Faiss indexes
 backend/data/faiss_bge*
+
+# Review Data
+backend/review/
