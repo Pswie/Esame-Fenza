@@ -401,127 +401,135 @@ export function Cinema() {
                 </div>
             </div>
 
-            <div className="cinema-layout">
-                {/* Film Principale Selezionato */}
-                {selectedFilm && (
-                    <div className="featured-movie">
-                        <div className="featured-poster-container">
-                            <div className="featured-poster">
-                                <img
-                                    src={selectedFilm.poster}
-                                    alt={selectedFilm.title}
-                                    loading="eager"
-                                />
-                                {selectedFilm.rating && (
-                                    <div className="poster-overlay">
-                                        <div className="rating-badge">
-                                            <span className="star">★</span> {selectedFilm.rating.toFixed(1)}
-                                        </div>
-                                    </div>
-                                )}
-                            </div>
-                            <button className="btn-watched-under-poster" onClick={() => setIsWatchedModalOpen(true)}>
-                                Film già visto
-                            </button>
-                        </div>
 
-                        <div className="featured-info">
-                            <h2>{selectedFilm.title}</h2>
-                            {selectedFilm.original_title && selectedFilm.original_title !== selectedFilm.title && (
-                                <p className="original-title">({selectedFilm.original_title})</p>
-                            )}
-                            <div className="movie-extra-info">
-                                {selectedFilm.director && (
-                                    <p className="director-info">
-                                        <strong>Regia:</strong> {selectedFilm.director}
-                                    </p>
-                                )}
-                                {selectedFilm.actors && (
-                                    <p className="cast-info">
-                                        <strong>Cast:</strong> {selectedFilm.actors}
-                                    </p>
-                                )}
-                            </div>
-
-                            {selectedFilm.genres.length > 0 && (
-                                <div className="genres-row">
-                                    {selectedFilm.genres.slice(0, 4).map((genre) => (
-                                        <span key={genre} className="genre-tag">{genre}</span>
-                                    ))}
-                                </div>
-                            )}
-
-                            {selectedFilm.description && (
-                                <div className="description-section">
-                                    <p className="movie-description">{selectedFilm.description}</p>
-                                </div>
-                            )}
-
-                            {/* Cinema e Orari */}
-                            <div className="cinemas-section">
-                                <h4>📍 Cinema Disponibili</h4>
-                                {selectedFilm.cinemas.map((cinema, idx) => {
-                                    // Sort showtimes by time ascending
-                                    const sortedShowtimes = [...cinema.showtimes].sort((a, b) => {
-                                        const timeA = a.time.replace(':', '');
-                                        const timeB = b.time.replace(':', '');
-                                        return parseInt(timeA) - parseInt(timeB);
-                                    });
-                                    return (
-                                        <div key={idx} className="cinema-block">
-                                            <div className="cinema-name-header">
-                                                🎬 {cinema.name}
-                                            </div>
-                                            <div className="showtimes-grid">
-                                                {sortedShowtimes.map((show, sIdx) => (
-                                                    <button key={sIdx} className="showtime-btn">
-                                                        <span className="time">{show.time}</span>
-                                                        {show.price && <span className="price">{show.price}</span>}
-                                                        {show.sala && <span className="sala">{show.sala}</span>}
-                                                    </button>
-                                                ))}
+            {loading ? (
+                <div className="cinema-loading">
+                    <div className="loading-spinner"></div>
+                    <p>Caricamento programmazione...</p>
+                </div>
+            ) : (
+                <div className="cinema-layout">
+                    {/* Film Principale Selezionato */}
+                    {selectedFilm && (
+                        <div className="featured-movie">
+                            <div className="featured-poster-container">
+                                <div className="featured-poster">
+                                    <img
+                                        src={selectedFilm.poster}
+                                        alt={selectedFilm.title}
+                                        loading="eager"
+                                    />
+                                    {selectedFilm.rating && (
+                                        <div className="poster-overlay">
+                                            <div className="rating-badge">
+                                                <span className="star">★</span> {selectedFilm.rating.toFixed(1)}
                                             </div>
                                         </div>
-                                    );
-                                })}
+                                    )}
+                                </div>
+                                <button className="btn-watched-under-poster" onClick={() => setIsWatchedModalOpen(true)}>
+                                    Film già visto
+                                </button>
                             </div>
-                        </div>
-                    </div>
-                )}
 
-                {/* Lista Altri Film */}
-                <div className="other-movies">
-                    <h3>Film in Sala ({films.length})</h3>
-                    <div className="movie-list">
-                        {films.map((film) => (
-                            <div
-                                key={film.id}
-                                className={`movie-list-item ${selectedFilm?.id === film.id ? 'active' : ''}`}
-                                onClick={() => setSelectedFilm(film)}
-                            >
-                                <img
-                                    src={film.poster}
-                                    alt={film.title}
-                                    className="list-poster"
-                                    loading="lazy"
-                                />
-                                <div className="list-info">
-                                    <h4>{film.title}</h4>
-                                    <p>{film.genres.slice(0, 2).join(', ')}</p>
-                                    <div className="list-meta">
-                                        {film.rating && (
-                                            <span className="rating">★ {film.rating.toFixed(1)}</span>
-                                        )}
-                                        <span className="cinemas-count">
-                                            🎦 {film.cinemas.length} cinema
-                                        </span>
+                            <div className="featured-info">
+                                <h2>{selectedFilm.title}</h2>
+                                {selectedFilm.original_title && selectedFilm.original_title !== selectedFilm.title && (
+                                    <p className="original-title">({selectedFilm.original_title})</p>
+                                )}
+                                <div className="movie-extra-info">
+                                    {selectedFilm.director && (
+                                        <p className="director-info">
+                                            <strong>Regia:</strong> {selectedFilm.director}
+                                        </p>
+                                    )}
+                                    {selectedFilm.actors && (
+                                        <p className="cast-info">
+                                            <strong>Cast:</strong> {selectedFilm.actors}
+                                        </p>
+                                    )}
+                                </div>
+
+                                {selectedFilm.genres.length > 0 && (
+                                    <div className="genres-row">
+                                        {selectedFilm.genres.slice(0, 4).map((genre) => (
+                                            <span key={genre} className="genre-tag">{genre}</span>
+                                        ))}
                                     </div>
+                                )}
+
+                                {selectedFilm.description && (
+                                    <div className="description-section">
+                                        <p className="movie-description">{selectedFilm.description}</p>
+                                    </div>
+                                )}
+
+                                {/* Cinema e Orari */}
+                                <div className="cinemas-section">
+                                    <h4>📍 Cinema Disponibili</h4>
+                                    {selectedFilm.cinemas.map((cinema, idx) => {
+                                        // Sort showtimes by time ascending
+                                        const sortedShowtimes = [...cinema.showtimes].sort((a, b) => {
+                                            const timeA = a.time.replace(':', '');
+                                            const timeB = b.time.replace(':', '');
+                                            return parseInt(timeA) - parseInt(timeB);
+                                        });
+                                        return (
+                                            <div key={idx} className="cinema-block">
+                                                <div className="cinema-name-header">
+                                                    🎬 {cinema.name}
+                                                </div>
+                                                <div className="showtimes-grid">
+                                                    {sortedShowtimes.map((show, sIdx) => (
+                                                        <button key={sIdx} className="showtime-btn">
+                                                            <span className="time">{show.time}</span>
+                                                            {show.price && <span className="price">{show.price}</span>}
+                                                            {show.sala && <span className="sala">{show.sala}</span>}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
                                 </div>
                             </div>
-                        ))}
+                        </div>
+                    )}
+
+                    {/* Lista Altri Film */}
+                    <div className="other-movies">
+                        <h3>Film in Sala ({films.length})</h3>
+                        <div className="movie-list">
+                            {films.map((film) => (
+                                <div
+                                    key={film.id}
+                                    className={`movie-list-item ${selectedFilm?.id === film.id ? 'active' : ''}`}
+                                    onClick={() => setSelectedFilm(film)}
+                                >
+                                    <img
+                                        src={film.poster}
+                                        alt={film.title}
+                                        className="list-poster"
+                                        loading="lazy"
+                                    />
+                                    <div className="list-info">
+                                        <h4>{film.title}</h4>
+                                        <p>{film.genres.slice(0, 2).join(', ')}</p>
+                                        <div className="list-meta">
+                                            {film.rating && (
+                                                <span className="rating">★ {film.rating.toFixed(1)}</span>
+                                            )}
+                                            <span className="cinemas-count">
+                                                🎦 {film.cinemas.length} cinema
+                                            </span>
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
                     </div>
                 </div>
-            </div>
+            )}
 
             {isWatchedModalOpen && selectedFilm && (
                 <MovieModal

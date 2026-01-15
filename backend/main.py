@@ -709,33 +709,10 @@ async def get_cinema_films(
         projection = {
             "poster_url": 1, "description": 1, "avg_vote": 1, 
             "genres": 1, "year": 1, "duration": 1, "actors": 1, 
-            "director": 1, "_id": 0
+            "director": 1, "imdb_id": 1, "_id": 0
         }
         
-        # 1. Ricerca esatta per titolo/titolo originale
-        or_conditions = []
-        if title:
-            escaped_title = re.escape(title)
-            or_conditions.extend([
-                {"title": {"$regex": f"^{escaped_title}$", "$options": "i"}},
-                {"original_title": {"$regex": f"^{escaped_title}$", "$options": "i"}},
-                {"normalized_title": normalize_title(title)}
-            ])
-        
-        if original_title:
-            escaped_original = re.escape(original_title)
-            or_conditions.extend([
-                {"title": {"$regex": f"^{escaped_original}$", "$options": "i"}},
-                {"original_title": {"$regex": f"^{escaped_original}$", "$options": "i"}},
-                {"normalized_title": normalize_title(original_title)}
-            ])
-
-        if or_conditions:
-            result = movies_catalog.find_one({"$or": or_conditions}, projection)
-            if result:
-                return result
-        
-        # 2. Ricerca per titoli normalizzati (già indicizzati)
+        # 1. PRIORITY OPTIMIZATION: Check normalized title first (Indexed & Fast)
         norm_title = normalize_title(title) if title else ""
         norm_original = normalize_title(original_title) if original_title else ""
         
@@ -743,7 +720,7 @@ async def get_cinema_films(
             if not norm or len(norm) < 3:
                 continue
             
-            # Match esatto su campo normalizzato
+            # Match esatto su campo normalizzato (Index Scan)
             result = movies_catalog.find_one({
                 "$or": [
                     {"normalized_title": norm},
@@ -752,18 +729,28 @@ async def get_cinema_films(
             }, projection)
             if result:
                 return result
-            
-            # Match parziale su titoli lunghi (DISABLED FOR PERFORMANCE)
-            # if len(norm) > 8:
-            #     result = movies_catalog.find_one({
-            #         "$or": [
-            #             {"normalized_title": {"$regex": f".*{re.escape(norm)}.*"}},
-            #             {"normalized_original_title": {"$regex": f".*{re.escape(norm)}.*"}}
-            #         ]
-            #     }, projection)
-            #     if result:
-            #         return result
 
+        # 2. Fallback: Regex Search (Slower, Scan-likely)
+        or_conditions = []
+        if title:
+            escaped_title = re.escape(title)
+            or_conditions.extend([
+                {"title": {"$regex": f"^{escaped_title}$", "$options": "i"}},
+                {"original_title": {"$regex": f"^{escaped_title}$", "$options": "i"}}
+            ])
+        
+        if original_title:
+            escaped_original = re.escape(original_title)
+            or_conditions.extend([
+                {"title": {"$regex": f"^{escaped_original}$", "$options": "i"}},
+                {"original_title": {"$regex": f"^{escaped_original}$", "$options": "i"}}
+            ])
+
+        if or_conditions:
+            result = movies_catalog.find_one({"$or": or_conditions}, projection)
+            if result:
+                return result
+                
         return None
 
     # Ottieni provincia utente (default: napoli / Pompei)
@@ -2187,11 +2174,8 @@ ES_URL = os.getenv("ELASTICSEARCH_URL", "http://elasticsearch:9200")
 ES_INDEX_NAME = "movies"
 es_client = Elasticsearch(ES_URL)
 
-try:
-    if not es_client.ping():
-        print(f"⚠️ Cannot connect to Elasticsearch at {ES_URL}")
-except Exception as e:
-    print(f"⚠️ Elasticsearch connection error: {e}")
+# Note: We removed the blocking ping() here to avoid startup delays.
+# Connection will be verified on first use in search endpoints.
 
 
 class AdvancedSearchRequest(BaseModel):
