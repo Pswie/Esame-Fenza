@@ -38,11 +38,16 @@ N_NOT_RECOMMENDED = 3
 MIN_YEAR_NOT_REC = 2010
 MIN_VOTES_NOT_REC = 5000
 
+# Explicit query params (deterministico, niente random)
+TOP_N_DIRECTORS = 5        # Top 5 registi preferiti
+TOP_N_ACTORS = 10          # Top 10 attori preferiti
+FILMS_PER_ACTOR = 10       # 10 film per attore = ~100 film max
+
 # Re-ranking weights
-W_DESCRIPTION = 0.4
+W_DESCRIPTION = 0.30
 W_GENRE = 0.1
-W_ACTORS = 0.30
-W_DIRECTOR = 0.20
+W_ACTORS = 0.50
+W_DIRECTOR = 0.10
 
 # Quality factor
 ALPHA_SIMILARITY = 0.70
@@ -192,6 +197,89 @@ class RecommendationService:
             "director": user_director
         }, matched_films
     
+    def _extract_favorite_people(self, matched_films: List[dict]) -> Tuple[List[str], List[str]]:
+        """
+        Estrae i registi e attori preferiti dall'utente basandosi sui film votati.
+        Ritorna liste ordinate deterministicamente per score (alta → bassa).
+        """
+        from collections import defaultdict
+        
+        director_scores = defaultdict(float)
+        actor_scores = defaultdict(float)
+        
+        for film in matched_films:
+            imdb_id = film.get("imdb_id")
+            rating = film.get("rating", 3)
+            weight = rating / 5.0
+            
+            catalog_film = self.db[COLL_CATALOG].find_one(
+                {"imdb_id": imdb_id},
+                {"director": 1, "actors": 1}
+            )
+            
+            if not catalog_film:
+                continue
+            
+            directors = parse_comma_separated(catalog_film.get("director", ""))
+            for d in directors:
+                director_scores[d] += weight
+            
+            actors = parse_comma_separated(catalog_film.get("actors", ""))
+            for a in actors:
+                actor_scores[a] += weight
+        
+        # Ordina per score decrescente, poi alfabeticamente per determinismo
+        sorted_directors = sorted(
+            director_scores.items(),
+            key=lambda x: (-x[1], x[0])
+        )
+        sorted_actors = sorted(
+            actor_scores.items(),
+            key=lambda x: (-x[1], x[0])
+        )
+        
+        top_directors = [d for d, _ in sorted_directors[:TOP_N_DIRECTORS]]
+        top_actors = [a for a, _ in sorted_actors[:TOP_N_ACTORS]]
+        
+        return top_directors, top_actors
+    
+    def _get_explicit_candidates(self, top_directors: List[str], top_actors: List[str], seen_ids: set) -> List[str]:
+        """
+        Query esplicite per film dei registi e attori preferiti.
+        Deterministico: ordina per avg_vote desc, poi per imdb_id.
+        """
+        explicit_ids = set()
+        
+        # 1. Tutti i film dei top registi
+        for director in top_directors:
+            director_films = list(self.db[COLL_CATALOG].find(
+                {
+                    "director": {"$regex": f"(^|,\\s*){re.escape(director)}(\\s*,|$)", "$options": "i"},
+                    "imdb_id": {"$nin": list(seen_ids)}
+                },
+                {"imdb_id": 1}
+            ).sort([("avg_vote", -1), ("imdb_id", 1)]))
+            
+            for f in director_films:
+                if f.get("imdb_id"):
+                    explicit_ids.add(f["imdb_id"])
+        
+        # 2. Top film per ciascun attore
+        for actor in top_actors:
+            actor_films = list(self.db[COLL_CATALOG].find(
+                {
+                    "actors": {"$regex": f"(^|,\\s*){re.escape(actor)}(\\s*,|$)", "$options": "i"},
+                    "imdb_id": {"$nin": list(seen_ids)}
+                },
+                {"imdb_id": 1}
+            ).sort([("avg_vote", -1), ("imdb_id", 1)]).limit(FILMS_PER_ACTOR))
+            
+            for f in actor_films:
+                if f.get("imdb_id"):
+                    explicit_ids.add(f["imdb_id"])
+        
+        return list(explicit_ids)
+    
     def _calculate_quality_score(self, avg_vote: float, votes: int) -> float:
         """Calculate Bayesian weighted quality score."""
         MIN_VOTES = 1000
@@ -311,30 +399,53 @@ class RecommendationService:
                     faiss_candidates.append(movie_id)
                     faiss_scores[movie_id] = float(dist)
         
+        # 3b. Explicit queries: top registi e attori preferiti
+        top_directors, top_actors = self._extract_favorite_people(matched_films)
+        explicit_candidates = self._get_explicit_candidates(top_directors, top_actors, seen_ids)
+        
+        # Merge: FAISS + explicit (union, senza duplicati)
+        all_candidate_ids = list(faiss_candidates)
+        for cand_id in explicit_candidates:
+            if cand_id not in faiss_scores:
+                all_candidate_ids.append(cand_id)
+                faiss_scores[cand_id] = 0.0  # Score 0 per ora, calcoleremo dopo
+        
         # 4. Re-ranking
         candidate_vecs = {
             doc["imdb_id"]: doc 
-            for doc in self.db[COLL_VECTORS].find({"imdb_id": {"$in": faiss_candidates}})
+            for doc in self.db[COLL_VECTORS].find({"imdb_id": {"$in": all_candidate_ids}})
         }
         
         candidate_catalog = {
             doc["imdb_id"]: doc 
             for doc in self.db[COLL_CATALOG].find(
-                {"imdb_id": {"$in": faiss_candidates}},
+                {"imdb_id": {"$in": all_candidate_ids}},
                 {"imdb_id": 1, "avg_vote": 1, "votes": 1, "title": 1, "original_title": 1, 
                  "year": 1, "genres": 1, "director": 1, "poster_url": 1, "description": 1}
             )
         }
         
         reranked = []
-        for cand_id in faiss_candidates:
+        for cand_id in all_candidate_ids:
             vec = candidate_vecs.get(cand_id)
             catalog = candidate_catalog.get(cand_id)
             if not vec:
                 continue
             
             # Calculate similarities
-            sim_desc = faiss_scores.get(cand_id, 0)
+            # Per candidati explicit (non FAISS), calcoliamo sim_desc manualmente
+            if cand_id in faiss_scores and faiss_scores[cand_id] > 0:
+                sim_desc = faiss_scores[cand_id]
+            else:
+                # Calcola cosine similarity per candidati explicit
+                cand_desc = np.array(vec.get("embedding_description", []), dtype=np.float32)
+                if len(cand_desc) > 0:
+                    cand_desc_norm = cand_desc / (np.linalg.norm(cand_desc) + 1e-8)
+                    user_desc_norm = user_vectors["description"] / (np.linalg.norm(user_vectors["description"]) + 1e-8)
+                    sim_desc = float(np.dot(user_desc_norm, cand_desc_norm))
+                else:
+                    sim_desc = 0.0
+            
             sim_genre = cosine_similarity(user_vectors["genre"], vec.get("embedding_genre"))
             sim_actors = cosine_similarity(user_vectors["actors"], vec.get("embedding_actors"))
             sim_director = cosine_similarity(user_vectors["director"], vec.get("embedding_director"))
