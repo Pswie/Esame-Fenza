@@ -61,12 +61,12 @@ export const authAPI = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password })
     });
-    
+
     if (!response.ok) {
       const error = await response.json();
       throw new Error(error.detail || 'Login fallito');
     }
-    
+
     const data = await response.json();
     localStorage.setItem('token', data.access_token);
     return data;
@@ -78,12 +78,12 @@ export const authAPI = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password })
     });
-    
+
     if (!response.ok) {
       const error = await response.json();
       throw new Error(error.detail || 'Registrazione fallita');
     }
-    
+
     return response.json();
   },
 
@@ -105,7 +105,7 @@ export const dataAPI = {
     const token = localStorage.getItem('token');
     const formData = new FormData();
     formData.append('file', file);
-    
+
     const response = await fetch(`${API_BASE_URL}/upload-csv`, {
       method: 'POST',
       headers: {
@@ -113,12 +113,12 @@ export const dataAPI = {
       },
       body: formData
     });
-    
+
     if (!response.ok) {
       const error = await response.json();
       throw new Error(error.detail || 'Upload fallito');
     }
-    
+
     return response.json();
   },
 
@@ -126,12 +126,12 @@ export const dataAPI = {
     const response = await fetch(`${API_BASE_URL}/user-stats`, {
       headers: getAuthHeaders()
     });
-    
+
     if (!response.ok) {
       if (response.status === 404) return null;
       throw new Error('Errore nel recupero delle statistiche');
     }
-    
+
     return response.json();
   },
 
@@ -139,11 +139,11 @@ export const dataAPI = {
     const response = await fetch(`${API_BASE_URL}/user-history`, {
       headers: getAuthHeaders()
     });
-    
+
     if (!response.ok) {
       throw new Error('Errore nel recupero della cronologia');
     }
-    
+
     const data = await response.json();
     return data.history || [];
   },
@@ -152,11 +152,11 @@ export const dataAPI = {
     const response = await fetch(`${API_BASE_URL}/user-movies?skip=${skip}&limit=${limit}`, {
       headers: getAuthHeaders()
     });
-    
+
     if (!response.ok) {
       throw new Error('Errore nel recupero dei film utente');
     }
-    
+
     return response.json();
   }
 };
@@ -170,11 +170,11 @@ export const sentimentAPI = {
     const response = await fetch(`${API_BASE_URL}/analyze-movie-sentiment/${encodeURIComponent(title)}`, {
       headers: getAuthHeaders()
     });
-    
+
     if (!response.ok) {
       throw new Error('Errore nell\'analisi del sentiment');
     }
-    
+
     const data = await response.json();
     return data.result;
   }
@@ -250,6 +250,16 @@ export const catalogAPI = {
   async searchMovies(query: string, limit = 20): Promise<CatalogSearchResult> {
     const response = await fetch(`${API_BASE_URL}/catalog/search?q=${encodeURIComponent(query)}&limit=${limit}`);
     if (!response.ok) throw new Error('Errore nella ricerca');
+    return response.json();
+  },
+
+  async advancedSearch(query: string, fields: string[]): Promise<CatalogSearchResult> {
+    const response = await fetch(`${API_BASE_URL}/catalog/advanced-search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, fields })
+    });
+    if (!response.ok) throw new Error('Errore nella ricerca avanzata');
     return response.json();
   },
 

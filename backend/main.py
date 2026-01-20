@@ -709,33 +709,10 @@ async def get_cinema_films(
         projection = {
             "poster_url": 1, "description": 1, "avg_vote": 1, 
             "genres": 1, "year": 1, "duration": 1, "actors": 1, 
-            "director": 1, "_id": 0
+            "director": 1, "imdb_id": 1, "_id": 0
         }
         
-        # 1. Ricerca esatta per titolo/titolo originale
-        or_conditions = []
-        if title:
-            escaped_title = re.escape(title)
-            or_conditions.extend([
-                {"title": {"$regex": f"^{escaped_title}$", "$options": "i"}},
-                {"original_title": {"$regex": f"^{escaped_title}$", "$options": "i"}},
-                {"normalized_title": normalize_title(title)}
-            ])
-        
-        if original_title:
-            escaped_original = re.escape(original_title)
-            or_conditions.extend([
-                {"title": {"$regex": f"^{escaped_original}$", "$options": "i"}},
-                {"original_title": {"$regex": f"^{escaped_original}$", "$options": "i"}},
-                {"normalized_title": normalize_title(original_title)}
-            ])
-
-        if or_conditions:
-            result = movies_catalog.find_one({"$or": or_conditions}, projection)
-            if result:
-                return result
-        
-        # 2. Ricerca per titoli normalizzati (già indicizzati)
+        # 1. PRIORITY OPTIMIZATION: Check normalized title first (Indexed & Fast)
         norm_title = normalize_title(title) if title else ""
         norm_original = normalize_title(original_title) if original_title else ""
         
@@ -743,7 +720,7 @@ async def get_cinema_films(
             if not norm or len(norm) < 3:
                 continue
             
-            # Match esatto su campo normalizzato
+            # Match esatto su campo normalizzato (Index Scan)
             result = movies_catalog.find_one({
                 "$or": [
                     {"normalized_title": norm},
@@ -752,18 +729,28 @@ async def get_cinema_films(
             }, projection)
             if result:
                 return result
-            
-            # Match parziale su titoli lunghi (DISABLED FOR PERFORMANCE)
-            # if len(norm) > 8:
-            #     result = movies_catalog.find_one({
-            #         "$or": [
-            #             {"normalized_title": {"$regex": f".*{re.escape(norm)}.*"}},
-            #             {"normalized_original_title": {"$regex": f".*{re.escape(norm)}.*"}}
-            #         ]
-            #     }, projection)
-            #     if result:
-            #         return result
 
+        # 2. Fallback: Regex Search (Slower, Scan-likely)
+        or_conditions = []
+        if title:
+            escaped_title = re.escape(title)
+            or_conditions.extend([
+                {"title": {"$regex": f"^{escaped_title}$", "$options": "i"}},
+                {"original_title": {"$regex": f"^{escaped_title}$", "$options": "i"}}
+            ])
+        
+        if original_title:
+            escaped_original = re.escape(original_title)
+            or_conditions.extend([
+                {"title": {"$regex": f"^{escaped_original}$", "$options": "i"}},
+                {"original_title": {"$regex": f"^{escaped_original}$", "$options": "i"}}
+            ])
+
+        if or_conditions:
+            result = movies_catalog.find_one({"$or": or_conditions}, projection)
+            if result:
+                return result
+                
         return None
 
     # Ottieni provincia utente (default: napoli / Pompei)
@@ -1217,13 +1204,13 @@ async def get_user_stats(current_user_id: str = Depends(get_current_user_id)):
     # 4. Sync Status Check
     # Default to "synced" - only show "syncing" if there's an explicit pending update
     sync_status = "synced"
-    user = users_collection.find_one({"user_id": current_user_id}, {"last_interaction": 1})
+    user = users_collection.find_one({"user_id": current_user_id}, {"data_updated_at": 1})
     stats_updated = stats.get("updated_at")
     
-    if user and user.get("last_interaction") and stats_updated:
+    if user and user.get("data_updated_at") and stats_updated:
         # Both timestamps exist - compare them
-        last_interaction = user.get("last_interaction")
-        if last_interaction > stats_updated:
+        data_updated = user.get("data_updated_at")
+        if data_updated > stats_updated:
             sync_status = "syncing"
     
     stats["sync_status"] = sync_status
@@ -1314,8 +1301,7 @@ async def add_movie(movie: MovieCreate, background_tasks: BackgroundTasks, curre
         {"user_id": current_user_id},
         {"$set": {
             "has_data": True,
-            "data_updated_at": datetime.now(italy_tz).isoformat(),
-            "last_interaction": datetime.now(italy_tz).isoformat()
+            "data_updated_at": datetime.now(italy_tz).isoformat()
         }}
     )
     
@@ -1343,78 +1329,102 @@ async def get_movies(current_user_id: str = Depends(get_current_user_id)):
 
 @app.get("/movies/person")
 async def get_movies_by_person(name: str, type: str, current_user_id: str = Depends(get_current_user_id)):
-    """Ottiene i film dell'utente filtrati per regista o attore."""
-    from collections import defaultdict # Import necessario
-    
-    user_movies = list(movies_collection.find({"user_id": current_user_id}))
-    titles = [m.get('name') for m in user_movies]
-    
+    """
+    Ottiene i film dell'utente filtrati per regista o attore.
+    V2: Refactoring per allineamento totale con Spark.
+    Invece di cercare il regista nel catalogo e poi matchare i film utente,
+    facciamo come Spark: prendiamo i film utente, li arricchiamo TUTTI col catalogo,
+    e filtriamo quelli che hanno il regista/attore cercato.
+    """
     import re
+    
+    # 1. Recupera TUTTI i film utente
+    user_movies = list(movies_collection.find({"user_id": current_user_id}))
+    if not user_movies:
+        return []
+
+    # 2. Batch Lookup Keys
+    titles_to_search = set()
+    norm_titles_to_search = set()
+    
+    for m in user_movies:
+        t = m.get('name')
+        if t:
+            titles_to_search.add(t)
+            norm_titles_to_search.add(normalize_title(t))
+            
+    # 3. Fetch Catalog (Enrichment Source)
+    # Cerchiamo nel catalogo qualsiasi film che l'utente possiede
+    catalog_docs = list(movies_catalog.find({
+        "$or": [
+            {"title": {"$in": list(titles_to_search)}},
+            {"original_title": {"$in": list(titles_to_search)}},
+            {"normalized_title": {"$in": list(norm_titles_to_search)}},
+            {"normalized_original_title": {"$in": list(norm_titles_to_search)}}
+        ]
+    }).collation({"locale": "en", "strength": 2}))
+    
+    # 4. Build Catalog Map (Key = Normalized Title -> Doc)
+    catalog_map = {}
+    for cd in catalog_docs:
+        # Mappa per tutte le varianti di titolo per garantire il match
+        if cd.get('title'): 
+            catalog_map[normalize_title(cd['title'])] = cd
+        if cd.get('original_title'): 
+            catalog_map[normalize_title(cd['original_title'])] = cd
+        if cd.get('normalized_title'): 
+            catalog_map[cd['normalized_title']] = cd
+        if cd.get('normalized_original_title'): 
+            catalog_map[cd['normalized_original_title']] = cd
+            
+    # 5. Enrich & Filter
+    results = []
+    target_name_norm = normalize_title(name)
     field = "director" if type == "director" else "actors"
     
-    # Cerchiamo nel catalogo tutti i film di quella persona
-    catalog_matches = list(movies_catalog.find({
-        field: {"$regex": re.escape(name), "$options": "i"}
-    }, {"title": 1, "original_title": 1, "genres": 1, "poster_url": 1, "poster_path": 1, "year": 1, "avg_vote": 1, "director": 1, "actors": 1, "description": 1, "duration": 1}))
-    
-    # Mappa: titolo -> Lista di candidati (per gestire collisioni)
-    catalog_map = defaultdict(list)
-    for cm in catalog_matches:
-        if cm.get('title'): catalog_map[cm['title'].lower()].append(cm)
-        if cm.get('original_title'): catalog_map[cm['original_title'].lower()].append(cm)
-        
-    results = []
     for m in user_movies:
-        title = m.get('name', '').lower()
-        year = m.get('year')
+        # Enrich logic
+        title_norm = normalize_title(m.get('name', ''))
+        cat_match = catalog_map.get(title_norm)
         
-        candidates = catalog_map.get(title)
-        if candidates:
-            # Trova il miglior candidato
-            match = None
+        # Determine person list
+        people_str = ""
+        cat_info = {}
+        
+        if cat_match:
+            cat_info = cat_match
+            people_str = cat_match.get(field, "")
+        else:
+            # Fallback (raro se non c'è match, ma usiamo dati utente se presenti)
+            cat_info = {}
+            people_str = m.get(field, "") # Normalmente vuoto nei film user
             
-            # 1. Anno esatto
-            if year:
-                for cand in candidates:
-                    if cand.get('year') == year:
-                        match = cand
-                        break
+        # Check Match
+        if not people_str:
+            continue
             
-            # 2. Anno tolleranza +/- 1
-            if not match and year:
-                for cand in candidates:
-                    if cand.get('year') and isinstance(cand['year'], int) and abs(cand['year'] - year) <= 1:
-                        match = cand
-                        break
-                        
-            # 3. Se non c'è anno nel film utente o nessuna corrispondenza trovata, 
-            # MA il titolo corrisponde a un film di questo attore...
-            # Qui bisogna stare attenti. Se l'utente ha "Passengers" (2016) e l'attore è Anne Hathaway (Passengers 2008), 
-            # NON dovremmo matchare se l'anno è diverso! 
-            
-            # Se abbiamo trovato un match di anno, bene.
-            # Se NON abbiamo trovato match di anno, e l'anno era specificato, scartiamo (è un omonimo sbagliato).
-            if match:
-                cat_info = match
-            elif year is None:
-                 # Se l'utente non ha messo l'anno, assumiamo sia quello giusto (fallback)
-                 cat_info = candidates[0]
-            else:
-                # Anno specificato ma diverso -> Omonimo, non aggiungere.
-                continue
-
-            # Priorità al poster_url (stessa logica del catalogo), poi poster_path TMDB
-            
-            # Priorità al poster_url (stessa logica del catalogo), poi poster_path TMDB
+        # Split tokens (spark logic: split by comma or pipe)
+        people_list = [p.strip() for p in re.split(r'[,|]', str(people_str)) if p.strip()]
+        
+        is_match = False
+        for p in people_list:
+            if normalize_title(p) == target_name_norm:
+                is_match = True
+                break
+                
+        if is_match:
+            # Poster construction
             poster = cat_info.get('poster_url')
             if not poster and cat_info.get('poster_path'):
                 poster = f"https://image.tmdb.org/t/p/w500{cat_info['poster_path']}"
-            
+            if not poster:
+                poster = m.get('poster_url') or STOCK_POSTER_URL
+                
             results.append({
                 "id": str(m.get('_id', random.randint(1, 100000))),
                 "title": m.get('name'),
                 "year": m.get('year') or cat_info.get('year'),
-                "poster": poster or STOCK_POSTER_URL,
+                "poster": poster,
                 "rating": m.get('rating', 0),
                 "genres": cat_info.get('genres', []),
                 "director": cat_info.get('director', ''),
@@ -1810,9 +1820,19 @@ async def add_movie_to_collection(
             }}
         )
         
-        # Evento Kafka per stats update
-        kafka_producer = get_kafka_producer()
-        kafka_producer.send_movie_event("UPDATE", current_user_id, {"name": movie.name, "year": movie.year, "rating": movie.rating})
+        # Aggiorna timestamp per invalidare cache e triggerare ricalcolo
+        users_collection.update_one(
+            {"user_id": current_user_id},
+            {"$set": {"data_updated_at": datetime.now(italy_tz).isoformat()}}
+        )
+        
+        # Triggera ricalcolo statistiche via Spark con batch RECALCULATE
+        all_movies = list(movies_collection.find({"user_id": current_user_id}))
+        try:
+            kafka_producer = get_kafka_producer()
+            kafka_producer.send_batch_event("RECALCULATE", current_user_id, all_movies)
+        except Exception as e:
+            print(f"⚠️ Errore invio Kafka: {e}")
         
         return {"status": "success", "message": "Film aggiornato"}
     
@@ -1843,8 +1863,7 @@ async def add_movie_to_collection(
             "$inc": {"movies_count": 1}, 
             "$set": {
                 "has_data": True,
-                "last_interaction": datetime.now(italy_tz).isoformat(),
-                "data_updated_at": datetime.now(italy_tz).isoformat()  # Per invalidare cache raccomandazioni
+                "data_updated_at": datetime.now(italy_tz).isoformat()
             }
         }
     )
@@ -1872,21 +1891,19 @@ async def update_user_movie(
     if res.matched_count == 0:
         raise HTTPException(status_code=404, detail="Film non trovato nei tuoi visti")
     
-    # Pubblica evento Kafka per elaborazione Spark
-    kafka_producer = get_kafka_producer()
-    kafka_producer.send_movie_event("UPDATE", current_user_id, {
-        "name": req.name, "year": req.year, "rating": req.rating
-    })
-    
-    # Aggiorna timestamp interazione per sync UI
-    # Aggiorna timestamp interazione per sync UI
+    # Aggiorna timestamp per invalidare cache e triggerare ricalcolo
     users_collection.update_one(
         {"user_id": current_user_id},
-        {"$set": {
-            "last_interaction": datetime.now(italy_tz).isoformat(),
-            "data_updated_at": datetime.now(italy_tz).isoformat()
-        }}
+        {"$set": {"data_updated_at": datetime.now(italy_tz).isoformat()}}
     )
+    
+    # Triggera ricalcolo statistiche via Spark con batch RECALCULATE
+    all_movies = list(movies_collection.find({"user_id": current_user_id}))
+    try:
+        kafka_producer = get_kafka_producer()
+        kafka_producer.send_batch_event("RECALCULATE", current_user_id, all_movies)
+    except Exception as e:
+        print(f"⚠️ Errore invio Kafka: {e}")
     
     # Stats aggiornate via Kafka/Spark
     return {"status": "success"}
@@ -1919,11 +1936,20 @@ async def remove_movie_from_collection(
         {
             "$inc": {"movies_count": -1},
             "$set": {
-                "last_interaction": datetime.now(italy_tz).isoformat(),
                 "data_updated_at": datetime.now(italy_tz).isoformat()
             }
         }
     )
+    
+    # Triggera ricalcolo statistiche via Spark
+    # Recupera tutti i film rimanenti per inviare evento completo
+    all_movies = list(movies_collection.find({"user_id": current_user_id}))
+    
+    try:
+        # kafka_producer è già istanziato sopra
+        kafka_producer.send_batch_event("RECALCULATE", current_user_id, all_movies)
+    except Exception as e:
+        print(f"⚠️ Errore invio Kafka: {e}")
     
     # Stats aggiornate via Kafka/Spark
     return {"message": "Film rimosso con successo"}
@@ -1948,21 +1974,19 @@ async def update_movie_rating(
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Film non trovato nella collezione")
     
-    # Pubblica evento Kafka per elaborazione Spark
-    kafka_producer = get_kafka_producer()
-    kafka_producer.send_movie_event("UPDATE", current_user_id, {
-        "name": movie.name, "year": movie.year, "rating": movie.rating
-    })
-    
-    # Aggiorna timestamp interazione per sync UI
-    # Aggiorna timestamp interazione per sync UI
+    # Aggiorna timestamp per invalidare cache e triggerare ricalcolo
     users_collection.update_one(
         {"user_id": current_user_id},
-        {"$set": {
-            "last_interaction": datetime.now(italy_tz).isoformat(),
-            "data_updated_at": datetime.now(italy_tz).isoformat()
-        }}
+        {"$set": {"data_updated_at": datetime.now(italy_tz).isoformat()}}
     )
+    
+    # Triggera ricalcolo statistiche via Spark con batch RECALCULATE
+    all_movies = list(movies_collection.find({"user_id": current_user_id}))
+    try:
+        kafka_producer = get_kafka_producer()
+        kafka_producer.send_batch_event("RECALCULATE", current_user_id, all_movies)
+    except Exception as e:
+        print(f"⚠️ Errore invio Kafka: {e}")
     
     # Stats aggiornate via Kafka/Spark
     return {"message": "Rating aggiornato con successo"}
@@ -2138,7 +2162,7 @@ async def search_catalog(
     q: str,
     limit: int = 20
 ):
-    """Ricerca film nel catalogo per titolo."""
+    """Ricerca film nel catalogo per titolo (supporta italiano, inglese e titolo originale)."""
     norm_q = normalize_title(q)
     # Use ^ to match only at the beginning as requested by the user
     regex_q = f"^{re.escape(q)}"
@@ -2148,10 +2172,12 @@ async def search_catalog(
         {"$or": [
             {"title": {"$regex": regex_q, "$options": "i"}},
             {"original_title": {"$regex": regex_q, "$options": "i"}},
+            {"english_title": {"$regex": regex_q, "$options": "i"}},  # Aggiunto per ricerca in inglese
             {"normalized_title": {"$regex": regex_norm, "$options": "i"}},
-            {"normalized_original_title": {"$regex": regex_norm, "$options": "i"}}
+            {"normalized_original_title": {"$regex": regex_norm, "$options": "i"}},
+            {"normalized_english_title": {"$regex": regex_norm, "$options": "i"}}  # Aggiunto per ricerca normalizzata inglese
         ]},
-        {"_id": 0, "imdb_id": 1, "title": 1, "year": 1, "poster_url": 1, "avg_vote": 1, "genres": 1, "description": 1, "director": 1, "actors": 1, "duration": 1, "date_published": 1}
+        {"_id": 0, "imdb_id": 1, "title": 1, "year": 1, "poster_url": 1, "avg_vote": 1, "genres": 1, "description": 1, "director": 1, "actors": 1, "duration": 1, "date_published": 1, "english_title": 1, "original_title": 1}
     ).sort([("date_published", -1), ("votes", -1)]).limit(limit))
     
     # Assicura poster_url
@@ -2173,6 +2199,105 @@ async def get_catalog_genres():
     ]
     genres = list(movies_catalog.aggregate(pipeline))
     return {"genres": [{"name": g["_id"], "count": g["count"]} for g in genres]}
+
+
+
+# ============================================
+# ELASTICSEARCH CONFIGURATION
+# ============================================
+from elasticsearch import Elasticsearch
+
+ES_URL = os.getenv("ELASTICSEARCH_URL", "http://elasticsearch:9200")
+ES_INDEX_NAME = "movies"
+es_client = Elasticsearch(ES_URL)
+
+# Note: We removed the blocking ping() here to avoid startup delays.
+# Connection will be verified on first use in search endpoints.
+
+
+class AdvancedSearchRequest(BaseModel):
+    query: str
+    fields: List[str] = ["title", "original_title", "actors", "director", "genres", "description"]
+
+
+@app.post("/catalog/advanced-search")
+async def advanced_search_catalog(req: AdvancedSearchRequest):
+    """
+    Ricerca avanzata film nel catalogo usando Elasticsearch.
+    Permette di specificare i campi su cui cercare.
+    """
+    if not req.query:
+        return {"results": [], "query": req.query, "total": 0}
+
+    # Costruisci la query ElasticSearch
+    es_query = {
+        "size": 20,
+        "query": {
+            "multi_match": {
+                "query": req.query,
+                "type": "best_fields",
+                "fields": req.fields,
+                "fuzziness": "AUTO"
+            }
+        }
+    }
+
+    try:
+        response = es_client.search(
+            index=ES_INDEX_NAME,
+            body=es_query
+        )
+        
+        hits = response["hits"]["hits"]
+        results = []
+        
+        # Collect Titles to fetch posters from Mongo (more reliable than IDs across different imports)
+        titles = [hit["_source"].get("title") for hit in hits if hit["_source"].get("title")]
+        
+        # Fetch posters mapping
+        posters_map = {}
+        if titles:
+            cursor = movies_catalog.find(
+                {"title": {"$in": titles}},
+                {"title": 1, "poster_url": 1}
+            )
+            for doc in cursor:
+                posters_map[doc["title"]] = doc.get("poster_url")
+
+        for hit in hits:
+            src = hit["_source"]
+            title = src.get("title")
+            
+            # Use fetched poster or fallback
+            poster = posters_map.get(title) or STOCK_POSTER_URL
+            
+            # Mappa il risultato ES nel formato CatalogMovie
+            movie = {
+                 "imdb_id": src.get("imdb_title_id") or src.get("mongo_id"), 
+                 "title": src.get("title"),
+                 "original_title": src.get("original_title"),
+                 "year": src.get("year"),
+                 "genres": src.get("genres", []),
+                 "poster_url": poster, 
+                 "avg_vote": src.get("avg_vote"),
+                 "description": src.get("description"),
+                 "director": ", ".join(src.get("director", [])),
+                 "actors": ", ".join(src.get("actors", [])),
+                 "score": hit["_score"]
+            }
+            results.append(movie)
+
+        return {
+            "results": results, 
+            "query": req.query, 
+            "total": response["hits"]["total"]["value"]
+        }
+
+    except Exception as e:
+        print(f"❌ ES Search Error: {e}")
+        # Fallback alla ricerca MongoDB standard se ES fallisce
+        print("⚠️ Fallback to MongoDB search...")
+        return await search_catalog(req.query, limit=20)
 
 
 @app.get("/catalog/poster/{imdb_id}")
@@ -2296,6 +2421,19 @@ async def get_admin_genres_stats():
     ]
     genres = list(movies_catalog.aggregate(pipeline))
     return [{"genre": g["_id"], "count": g["count"]} for g in genres]
+
+
+@app.get("/admin/stats/activity")
+async def get_admin_activity_stats():
+    """Attività giornaliera (film visti) per time series Grafana."""
+    pipeline = [
+        {"$match": {"date": {"$exists": True, "$ne": None}}},
+        {"$group": {"_id": "$date", "count": {"$sum": 1}}},
+        {"$sort": {"_id": 1}}
+    ]
+    activity = list(movies_collection.aggregate(pipeline))
+    # Grafana Infinity preferisce array di oggetti
+    return [{"date": a["_id"], "count": a["count"]} for a in activity]
 
 
 # ============================================

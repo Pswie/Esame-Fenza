@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react';
 import { MovieCard } from '../components/MovieCard';
-import './Recommendations.css';
+import { MovieModal } from '../components/MovieModal';
+import { catalogAPI } from '../services/api';
 import { API_BASE_URL } from '../config';
+import './Recommendations.css';
 
 interface Movie {
     id?: number;
@@ -93,6 +95,26 @@ export function Recommendations() {
         ? filterMovies(recommendedMovies)
         : filterMovies(notRecommendedMovies);
 
+    // State for Modal
+    const [selectedMovie, setSelectedMovie] = useState<any>(null);
+    const [isModalOpen, setIsModalOpen] = useState(false);
+
+    const handleMovieClick = async (movie: Movie) => {
+        if (!movie.imdb_id) return;
+
+        try {
+            // Fetch full details for the modal
+            const fullMovie = await catalogAPI.getMovie(movie.imdb_id);
+            setSelectedMovie(fullMovie);
+            setIsModalOpen(true);
+        } catch (err) {
+            console.error("Failed to load movie details", err);
+            // Fallback: show what we have
+            setSelectedMovie(movie);
+            setIsModalOpen(true);
+        }
+    };
+
     if (loading) {
         return (
             <div className="recommendations-page">
@@ -128,7 +150,7 @@ export function Recommendations() {
         <div className="recommendations-page">
             <div className="page-header">
                 <h1>Raccomandazioni</h1>
-                <p>Film selezionati in base ai tuoi gusti ({matchedFilms}/{totalFilms} film analizzati)</p>
+                <p>Film selezionati in base ai tuoi gusti</p>
             </div>
 
             <div className="filters-section">
@@ -172,10 +194,14 @@ export function Recommendations() {
 
                 <div className="movies-grid">
                     {displayedMovies.map((movie, index) => (
-                        <div key={movie.imdb_id || movie.id} style={{ animationDelay: `${index * 0.1}s` }}>
+                        <div
+                            key={movie.imdb_id || movie.id}
+                            style={{ animationDelay: `${index * 0.1}s` }}
+                            onClick={() => handleMovieClick(movie)}
+                        >
                             <MovieCard
                                 movie={movie}
-                                showMatchScore={true}
+                                showMatchScore={false}
                                 variant={view === 'recommended' ? 'recommended' : 'not-recommended'}
                             />
                         </div>
@@ -189,6 +215,15 @@ export function Recommendations() {
                     </div>
                 )}
             </div>
+
+            {/* Modal */}
+            {isModalOpen && selectedMovie && (
+                <MovieModal
+                    movie={selectedMovie}
+                    mode="view"
+                    onClose={() => setIsModalOpen(false)}
+                />
+            )}
         </div>
     );
 }

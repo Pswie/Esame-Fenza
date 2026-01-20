@@ -22,7 +22,7 @@ export function MovieModal({ movie, mode, onClose, onSave, onDelete, hideDetails
     const title = 'title' in movie ? movie.title : movie.name;
     const year = movie.year;
     const poster = catalogAPI.getPosterUrl(movie);
-    
+
     // Campi dal catalogo (se disponibili)
     const description = 'description' in movie ? movie.description : (movie as MovieRating).description;
     const director = 'director' in movie ? movie.director : (movie as MovieRating).director;
@@ -58,10 +58,10 @@ export function MovieModal({ movie, mode, onClose, onSave, onDelete, hideDetails
                     {/* Sinistra: Poster e Azioni */}
                     <div className="detail-left">
                         <img src={poster} alt={title} className="detail-poster" />
-                        
+
                         {(mode === 'edit' && !hideDetailsButton) && (
                             <div className="modal-sidebar-actions">
-                                <button 
+                                <button
                                     className="btn-scheda-toggle"
                                     onClick={() => setShowScheda(!showScheda)}
                                 >
@@ -104,13 +104,7 @@ export function MovieModal({ movie, mode, onClose, onSave, onDelete, hideDetails
                                     </div>
                                 </div>
 
-                                {('budget' in movie && movie.budget) && (
-                                    <div className="detail-section">
-                                        <h3>Dati Economici</h3>
-                                        <p>Budget: {movie.budget}</p>
-                                        {movie.worlwide_gross_income && <p>Incasso: {movie.worlwide_gross_income}</p>}
-                                    </div>
-                                )}
+
                             </div>
                         ) : (
                             <div className="detail-edit-mode animate-fade-in">
@@ -118,8 +112,8 @@ export function MovieModal({ movie, mode, onClose, onSave, onDelete, hideDetails
                                     <h3>La tua Recensione</h3>
                                     <div className="review-stars">
                                         {[1, 2, 3, 4, 5].map(star => (
-                                            <span 
-                                                key={star} 
+                                            <span
+                                                key={star}
                                                 className={`star-input ${star <= rating ? 'active' : ''}`}
                                                 onClick={() => setRating(star)}
                                             >
@@ -127,21 +121,21 @@ export function MovieModal({ movie, mode, onClose, onSave, onDelete, hideDetails
                                             </span>
                                         ))}
                                     </div>
-                                    <textarea 
+                                    <textarea
                                         className="comment-textarea"
                                         placeholder="Cosa ne pensi di questo film? Scrivi qui il tuo commento..."
                                         value={comment}
                                         onChange={e => setComment(e.target.value)}
                                     />
-                                    
+
                                     <div className="modal-actions">
                                         {onDelete && (
                                             <button className="btn-delete" title="Rimuovi dai visti" onClick={onDelete}>
                                                 🗑️
                                             </button>
                                         )}
-                                        <button 
-                                            className="btn-save" 
+                                        <button
+                                            className="btn-save"
                                             disabled={saving}
                                             onClick={handleSave}
                                         >

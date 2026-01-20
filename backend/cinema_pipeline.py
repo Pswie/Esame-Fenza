@@ -654,11 +654,10 @@ class CinemaFilmSync:
                 if norm_title == cand_norm_title or norm_title == cand_norm_orig:
                     return candidate
                 
-                # Match parziale (contenimento)
-                if len(norm_title) > 5:
+                # Match parziale (contenimento) - Molto rischioso, rimosso per titoli brevi
+                # Lo usiamo solo se entrambi i titoli sono lunghi e molto simili
+                if len(norm_title) > 15 and len(cand_norm_title) > 15:
                     if norm_title in cand_norm_title or cand_norm_title in norm_title:
-                        return candidate
-                    if cand_norm_orig and (norm_title in cand_norm_orig or cand_norm_orig in norm_title):
                         return candidate
         
         # 4. Cerca anche per titolo originale normalizzato
@@ -779,18 +778,20 @@ class CinemaFilmSync:
         if cleaned_title != title.lower():
             search_queries.append(cleaned_title)
 
-        # Lingue da provare: italiano, tedesco, inglese, francese, spagnolo, giapponese
-        languages = ["it-IT", "de-DE", "en-US", "fr-FR", "es-ES", "ja-JP"]
+        # RIMOZIONE LIMITI LINGUA: Aggiungiamo russo e persiano per Ellie e Divine Comedy
+        # E proviamo anche senza specificare la lingua per lasciare che TMDB decida
+        languages = ["it-IT", "en-US", "ru-RU", "fa-IR", "de-DE", "fr-FR", "es-ES", "ja-JP", None]
         
         for lang in languages:
             for query in search_queries:
                 url = f"{TMDB_BASE_URL}/search/movie"
                 params = {
                     "api_key": self.api_key,
-                    "language": lang,
                     "query": query,
                     "include_adult": False
                 }
+                if lang:
+                    params["language"] = lang
                 if year:
                     params["year"] = year
                     
@@ -904,9 +905,13 @@ class CinemaFilmSync:
             poster_path = tmdb_details.get("poster_path")
             poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else None
             
+            # RIMOZIONE LIMITI POSTER: Non filtriamo più i film senza poster.
+            # Usiamo un segnaposto per garantire la visualizzazione.
+            has_real_poster = True
             if not poster_url:
-                print(f"      - Poster mancante")
-                return False
+                print(f"      - Poster mancante, uso segnaposto")
+                poster_url = "https://via.placeholder.com/500x750?text=No+Poster"
+                has_real_poster = False
             
             release_date = tmdb_details.get("release_date")
             if not release_date:
@@ -947,7 +952,7 @@ class CinemaFilmSync:
                 "reviews_from_critics": None,
                 "link_imdb": f"https://www.imdb.com/title/{real_imdb_id}/" if real_imdb_id else None,
                 "poster_url": poster_url,
-                "has_real_poster": True,
+                "has_real_poster": has_real_poster,
                 "loaded_at": datetime.now(pytz.timezone('Europe/Rome')).isoformat(),
                 "source": "comingsoon_sync"
             }
@@ -963,7 +968,45 @@ class CinemaFilmSync:
         except Exception as e:
             print(f"    ❌ Errore aggiunta film: {e}")
             return False
-    
+
+    def safe_add_specific_films(self):
+        """Metodo per assicurarsi che i film richiesti dall'utente siano nel catalogo."""
+        requested_films = [
+            {
+                "title": "Ellie e la Città di Smeraldo",
+                "original_title": "Volshebnik Izumrudnogo goroda",
+                "director": "Igor Voloshin"
+            },
+            {
+                "title": "Divine Comedy",
+                "original_title": "Komedie Elahi",
+                "director": "Ali Asgari"
+            }
+        ]
+        
+        print("\n🔍 Verifica film richiesti dall'utente...")
+        for film in requested_films:
+            # Verifica se esiste
+            match = self.film_exists_in_catalog(film['title'], film['original_title'], film['director'])
+            if match:
+                print(f"  ✅ {film['title']} già presente.")
+                continue
+                
+            print(f"  🆕 Aggiunta forzata: {film['title']}...")
+            tmdb_result = self.search_tmdb(film['original_title'], director=film['director'], original_title=film['original_title'])
+            if not tmdb_result:
+                tmdb_result = self.search_tmdb(film['title'], director=film['director'])
+                
+            if tmdb_result:
+                details = self.fetch_full_details(tmdb_result['id'])
+                if details:
+                    self.add_film_to_catalog(details)
+                    print(f"    ✨ {film['title']} aggiunto con successo.")
+                else:
+                    print(f"    ❌ Impossibile ottenere dettagli per {film['title']}.")
+            else:
+                print(f"    ❌ Impossibile trovare {film['title']} su TMDB.")
+
     def sync(self) -> dict:
         """FASE 2: Esegue la sincronizzazione completa."""
         print("\n" + "=" * 70)
@@ -971,6 +1014,9 @@ class CinemaFilmSync:
         print("   Legge showtimes → cerca TMDB → aggiunge a movies_catalog")
         print("=" * 70)
         print(f"⏰ Avvio: {datetime.now(pytz.timezone('Europe/Rome')).strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        # 0. Aggiungi film specifici richiesti (safety step)
+        self.safe_add_specific_films()
         
         # 1. Ottieni film unici da showtimes
         films = self.get_unique_films_from_showtimes()
