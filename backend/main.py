@@ -1023,7 +1023,7 @@ async def get_scraper_progress():
 # ============================================
 # DATA ENDPOINTS
 # ============================================
-def process_missing_movies_background(titles_years: list, user_id: str):
+def process_missing_movies_background(titles_years: list, user_id: str, trigger_kafka_update: bool = False):
     """
     Task in background per cercare i film mancanti su TMDB 
     e poi aggiornare le statistiche dell'utente.
@@ -1067,8 +1067,8 @@ def process_missing_movies_background(titles_years: list, user_id: str):
                 
     print(f"✅ [Background] Aggiunti {added_count} nuovi film al catalogo.")
     
-    # 2. Triggera ricalcolo statistiche via Kafka/Spark se sono stati aggiunti film
-    if added_count > 0:
+    # 2. Triggera ricalcolo statistiche via Kafka/Spark se sono stati aggiunti film E se richiesto
+    if trigger_kafka_update and added_count > 0:
         print("🔄 [Background] Triggering ricalcolo statistiche via Kafka/Spark...")
         movies = list(movies_collection.find({"user_id": user_id}))
         if movies:
@@ -1202,7 +1202,7 @@ async def upload_csv(
     
     # Avvia task in background per i film mancanti
     titles_years = list(set([(m["name"], m["year"]) for m in movies]))
-    background_tasks.add_task(process_missing_movies_background, titles_years, current_user_id)
+    background_tasks.add_task(process_missing_movies_background, titles_years, current_user_id, trigger_kafka_update=False)
     
     return {
         "status": "success",
