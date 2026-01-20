@@ -90,7 +90,6 @@ def normalize_title(text: str) -> str:
     # Rimuove tutto ciò che non è alfanumerico o spazio, e normalizza gli spazi
     result = re.sub(r'[^a-zA-Z0-9\s]', ' ', result)
     result = " ".join(result.split()).lower()
-    result = " ".join(result.split()).lower()
     return result
 
 def mongo_to_dict(obj):
@@ -106,6 +105,40 @@ def mongo_to_dict(obj):
     if isinstance(obj, ObjectId):
         return str(obj)
     return obj
+
+
+def enrich_movie_data(movies: List[Dict]) -> List[Dict]:
+    """
+    Arricchisce una lista di film con dati dal catalogo (poster, generi, regista).
+    Evita duplicazione di logica tra i vari endpoint.
+    """
+    if not movies:
+        return []
+        
+    enriched = []
+    for m in movies:
+        title = m.get("name")
+        if title:
+            norm_title = normalize_title(title)
+            # Tenta prima con titolo esatto, poi normalizzato
+            cat = movies_catalog.find_one({
+                "$or": [
+                    {"title": title},
+                    {"normalized_title": norm_title}
+                ]
+            }, {"poster_url": 1, "genres": 1, "director": 1, "duration": 1, "imdb_id": 1, "_id": 0})
+            
+            if cat:
+                m["poster_url"] = cat.get("poster_url") or STOCK_POSTER_URL
+                m["genres"] = cat.get("genres", [])
+                m["director"] = cat.get("director", "")
+                m["duration"] = cat.get("duration")
+                m["imdb_id"] = cat.get("imdb_id")
+            else:
+                m["poster_url"] = m.get("poster_url") or STOCK_POSTER_URL
+        
+        enriched.append(m)
+    return enriched
 
 
 
@@ -414,37 +447,42 @@ async def get_quiz_questions():
 @app.post("/quiz/submit")
 async def submit_quiz(submission: QuizSubmission, current_user_id: str = Depends(get_current_user_id)):
     """Registra il risultato del quiz."""
-    stats = stats_collection.find_one({"user_id": current_user_id}) or {}
+    # Recupera dati utente attuali per verificare ultimo quiz
+    user = users_collection.find_one({"user_id": current_user_id})
+    if not user:
+        raise HTTPException(status_code=404, detail="Utente non trovato")
+        
+    current_quiz = user.get("quiz", {})
     
     # Check if quiz was already taken today
-    if stats.get("last_quiz_date") == submission.quiz_date:
+    if current_quiz.get("last_date") == submission.quiz_date:
         # Return existing stats without updating
         return {
             "message": "Quiz già completato oggi", 
             "stats": {
-                "correct": stats.get("quiz_correct_count", 0), 
-                "wrong": stats.get("quiz_wrong_count", 0)
+                "correct": current_quiz.get("correct_count", 0), 
+                "wrong": current_quiz.get("wrong_count", 0)
             },
             "updated": False
         }
     
     # Aggiorna statistiche quiz
-    quiz_correct = stats.get("quiz_correct_count", 0) + submission.correct
-    quiz_wrong = stats.get("quiz_wrong_count", 0) + submission.wrong
-    quiz_attempts = stats.get("quiz_total_attempts", 0) + 1
+    quiz_correct = current_quiz.get("correct_count", 0) + submission.correct
+    quiz_wrong = current_quiz.get("wrong_count", 0) + submission.wrong
+    quiz_attempts = current_quiz.get("total_attempts", 0) + 1
     
-    stats_collection.update_one(
+    new_quiz_data = {
+        "correct_count": quiz_correct,
+        "wrong_count": quiz_wrong,
+        "total_attempts": quiz_attempts,
+        "last_date": submission.quiz_date
+    }
+    
+    users_collection.update_one(
         {"user_id": current_user_id},
-        {
-            "$set": {
-                "quiz_correct_count": quiz_correct,
-                "quiz_wrong_count": quiz_wrong,
-                "quiz_total_attempts": quiz_attempts,
-                "last_quiz_date": submission.quiz_date
-            }
-        },
-        upsert=True
+        {"$set": {"quiz": new_quiz_data}}
     )
+
     return {"message": "Quiz registrato", "stats": {"correct": quiz_correct, "wrong": quiz_wrong}, "updated": True}
 
 @app.post("/login")
@@ -1172,54 +1210,285 @@ async def recalculate_stats(current_user_id: str = Depends(get_current_user_id))
     }
 
 
+async def get_realtime_year_stats(user_id: str, year: int):
+    """
+    Calcola conteggio mensile reale dalla collezione movies per un anno specifico.
+    Restituisce il formato atteso dal frontend per monthly_data e total_films.
+    """
+    months_map = {1: "Gen", 2: "Feb", 3: "Mar", 4: "Apr", 5: "Mag", 6: "Giu", 
+                  7: "Lug", 8: "Ago", 9: "Set", 10: "Ott", 11: "Nov", 12: "Dic"}
+    
+    year_str = str(year)
+    pipeline = [
+        {"$match": {
+            "user_id": user_id, 
+            "date": {"$regex": f"^{year_str}"}
+        }},
+        {"$group": {
+            "_id": {"$substr": ["$date", 5, 2]},  # Estrae mese dalla data
+            "count": {"$sum": 1}
+        }}
+    ]
+    
+    monthly_real = list(movies_collection.aggregate(pipeline))
+    real_monthly_map = {int(m["_id"]): m["count"] for m in monthly_real if m["_id"]}
+    
+    monthly_data = [
+        {"month": months_map[i], "films": real_monthly_map.get(i, 0)} 
+        for i in range(1, 13)
+    ]
+    
+    return {
+        "year": year,
+        "monthly_data": monthly_data,
+        "total_films": sum(real_monthly_map.values())
+    }
+
 @app.get("/user-stats")
 async def get_user_stats(current_user_id: str = Depends(get_current_user_id)):
     """
-    Ottiene le statistiche dell'utente.
-    Legge direttamente da user_stats (aggiornato da Spark).
-    Se stats non presenti ma ci sono film, ritorna stato 'processing'.
+    Ottiene le statistiche dell'utente (Schema V4 incrementale).
     """
-    # 1. Leggi stats da DB (ora unica source of truth)
+    # 1. Leggi stats da DB
     stats = stats_collection.find_one({"user_id": current_user_id}, {"_id": 0})
     
     if not stats:
-        # 2. Controlla se l'utente ha film - se sì, stats in elaborazione
+        # Fallback se le stats non esistono (utente nuovo o primo upload)
         movie_count = movies_collection.count_documents({"user_id": current_user_id})
         if movie_count > 0:
             return {
                 "status": "processing",
-                "message": "Statistiche in elaborazione, riprova tra qualche secondo...",
+                "message": "Statistiche in elaborazione...",
                 "total_watched": movie_count,
                 "avg_rating": 0,
-                "rating_chart_data": [],
                 "genre_data": [],
                 "source": "pending"
             }
-        raise HTTPException(status_code=404, detail="Nessun dato trovato. Carica prima un file CSV.")
+        raise HTTPException(status_code=404, detail="Nessun dato trovato.")
+
+    # ═══════════════════════════════════════════════════════════
+    # SCHEMA INCREMENTALE V4: Calcoli Lazy con Sync Real-time
+    # ═══════════════════════════════════════════════════════════
+    # A. SYNC REAL-TIME IMMEDIATO dei conteggi chiave (Fonte di verità: collection movies)
+    total_watched = movies_collection.count_documents({"user_id": current_user_id})
     
-    # 3. Calcola il conteggio REALE dei film (per sicurezza sync immediato)
-    real_count = movies_collection.count_documents({"user_id": current_user_id})
-    stats["total_watched"] = real_count
+    # Sync Monthly Counts in tempo reale per TUTTI gli anni
+    pipeline = [
+        {"$match": {"user_id": current_user_id}},
+        {"$group": {
+            "_id": {"year": {"$substr": ["$date", 0, 4]}, "month": {"$substr": ["$date", 5, 2]}},
+            "count": {"$sum": 1}
+        }}
+    ]
+    real_time_monthly_counts = list(movies_collection.aggregate(pipeline))
     
+    # Ricostruisci monthly_counts nidificato aggiornato dai dati reali
+    synced_monthly_counts = {}
+    for item in real_time_monthly_counts:
+        y = item["_id"]["year"]
+        m = item["_id"]["month"]
+        if y and m:
+            if y not in synced_monthly_counts:
+                synced_monthly_counts[y] = {}
+            synced_monthly_counts[y][m] = item["count"]
+    
+    # Sovrascrivi monthly_counts dalle stats con quelli reali del DB
+    # (Spark aggiornerà il resto dei campi asincronamente)
+    monthly_counts = synced_monthly_counts
+    
+    sum_ratings = stats.get("sum_ratings", 0) or 0
+    
+    # Media rating (lazy) - Usa total_watched reale
+    avg_rating = round(sum_ratings / total_watched, 2) if total_watched > 0 else 0
+    
+    # Ore di visione
+    watch_time_hours = (stats.get("watch_time_minutes", 0) or 0) // 60
+    
+    # Genre counts -> genre_data (formattato per frontend)
+    genre_counts = stats.get("genre_counts", {})
+    total_genres = sum(genre_counts.values()) or 1
+    
+    # Colori generi
+    genre_colors = {
+        "Drama": "#E50914", "Comedy": "#FF6B35", "Action": "#00529B",
+        "Thriller": "#8B5CF6", "Horror": "#6B21A8", "Romance": "#EC4899",
+        "Sci-Fi": "#06B6D4", "Adventure": "#10B981", "Crime": "#F59E0B",
+        "Dramma": "#E50914", "Commedia": "#FF6B35", "Azione": "#00529B",
+        "Fantascienza": "#06B6D4", "Avventura": "#10B981", "Fantasy": "#8B5CF6",
+        "Family": "#F472B6", "Mystery": "#4B5563", "Animation": "#FBBF24"
+    }
+    
+    sorted_genres = sorted(genre_counts.items(), key=lambda x: -x[1])[:8]
+    genre_data = [
+        {
+            "name": g.replace("_", " "),
+            "value": round((c / total_genres) * 100, 1),
+            "color": genre_colors.get(g.replace("_", " "), "#9CA3AF"),
+            "count": c
+        }
+        for g, c in sorted_genres
+    ]
+        
+    favorite_genre = sorted_genres[0][0].replace("_", " ") if sorted_genres else "Nessuno"
+    
+    # Rating distribution -> rating_chart_data
+    rating_dist = stats.get("rating_distribution", {})
+    rating_chart_data = [
+        {"rating": f"⭐{i}", "count": rating_dist.get(str(i), 0), "stars": i}
+        for i in range(1, 6)
+    ]
+        
+    # Director stats -> best_rated_directors (lazy calculation)
+    director_stats = stats.get("director_stats", {})
+    best_directors = []
+    for name, data in director_stats.items():
+        count = data.get("count", 0) or 0
+        sum_v = data.get("sum_voti", 0) or 0
+        if count > 0:
+            best_directors.append({
+                "name": name.replace("_", " "),
+                "count": count,
+                "avg_rating": round(sum_v / count, 1)
+            })
+    best_directors.sort(key=lambda x: (-x["avg_rating"], -x["count"]))
+        
+    # Formatta per threshold come atteso dal frontend
+    best_rated_directors = {
+        "1": best_directors[:10],
+        "2": [d for d in best_directors if d["count"] >= 2][:10],
+        "3": [d for d in best_directors if d["count"] >= 3][:10],
+        "5": [d for d in best_directors if d["count"] >= 5][:10]
+    }
+    most_watched_directors = sorted(best_directors, key=lambda x: -x["count"])[:15]
+        
+    # Actor stats -> best_rated_actors
+    actor_stats = stats.get("actor_stats", {})
+    best_actors = []
+    for name, data in actor_stats.items():
+        count = data.get("count", 0) or 0
+        sum_v = data.get("sum_voti", 0) or 0
+        if count > 0:
+            best_actors.append({
+                "name": name.replace("_", " "),
+                "count": count,
+                "avg_rating": round(sum_v / count, 1)
+            })
+    best_actors.sort(key=lambda x: (-x["avg_rating"], -x["count"]))
+    
+    best_rated_actors = {
+        "1": best_actors[:10],
+        "2": [a for a in best_actors if a["count"] >= 2][:10],
+        "3": [a for a in best_actors if a["count"] >= 3][:10],
+        "5": [a for a in best_actors if a["count"] >= 5][:10]
+    }
+    most_watched_actors = sorted(best_actors, key=lambda x: -x["count"])[:15]
+        
+    # Monthly counts -> year_data (ricostruisci formato frontend)
+    # Struttura ora nidificata: { "2026": { "01": 5, "02": 3 } }
+    monthly_counts = stats.get("monthly_counts", {})
+    months_map = {1: "Gen", 2: "Feb", 3: "Mar", 4: "Apr", 5: "Mag", 6: "Giu", 
+                  7: "Lug", 8: "Ago", 9: "Set", 10: "Ott", 11: "Nov", 12: "Dic"}
+    
+    years_data_map = {}
+    for year_key, months in monthly_counts.items():
+        try:
+            year = int(year_key)
+            if year not in years_data_map:
+                years_data_map[year] = {i: 0 for i in range(1, 13)}
+            for month_key, count in months.items():
+                try:
+                    month = int(month_key)
+                    years_data_map[year][month] = count
+                except:
+                    pass
+        except:
+            pass
+    
+    year_data = []
+    for year in sorted(years_data_map.keys(), reverse=True):
+        month_counts = years_data_map[year]
+        monthly_data = [{"month": months_map[i], "films": month_counts.get(i, 0)} for i in range(1, 13)]
+        year_data.append({
+            "year": year,
+            "monthly_data": monthly_data,
+            "total_films": sum(month_counts.values())
+        })
+        
+    available_years = sorted(years_data_map.keys(), reverse=True)
+    
+    # Top 5 anni più visti (calcolato dalla collection movies)
+    # Aggregazione per anno di PRODUZIONE del film (non data visione)
+    year_counts = {}
+    user_movies = list(movies_collection.find(
+        {"user_id": current_user_id}, 
+        {"year": 1, "_id": 0}
+    ))
+    for m in user_movies:
+        y = m.get("year")
+        if y:
+            year_counts[y] = year_counts.get(y, 0) + 1
+    
+    top_years = [
+        {"year": y, "count": c} 
+        for y, c in sorted(year_counts.items(), key=lambda x: -x[1])[:5]
+    ]
+    
+    # IMPORTANTE: salva valori prima di sovrascrivere l'oggetto stats
+    original_stats_version = stats.get("stats_version", "4.0_incremental")
+    original_updated_at = stats.get("updated_at")
+    
+    # Calcolo lazy per stats mancanti
+    unique_directors_count = len(director_stats)
+    unique_actors_count = len(actor_stats)
+    avg_duration = (stats.get("watch_time_minutes", 0) or 0) // total_watched if total_watched > 0 else 0
+    
+    # Costruisci risposta finale (formato compatibile frontend)
+    stats = {
+        "user_id": current_user_id,
+        "total_watched": total_watched,
+        "avg_rating": avg_rating,
+        "watch_time_hours": watch_time_hours,
+        "avg_duration": avg_duration,
+        "unique_directors_count": unique_directors_count,
+        "unique_actors_count": unique_actors_count,
+        "favorite_genre": favorite_genre,
+        "genre_data": genre_data,
+        "rating_chart_data": rating_chart_data,
+        "best_rated_directors": best_rated_directors,
+        "most_watched_directors": most_watched_directors,
+        "best_rated_actors": best_rated_actors,
+        "most_watched_actors": most_watched_actors,
+        "year_data": year_data,
+        "available_years": available_years,
+        "top_years": top_years,  # Top 5 anni più visti
+        "top_rated_movies": [],  # Lazy: usa /user-stats/top-rated
+        "recent_movies": [],     # Lazy: usa /user-stats/recent
+        "stats_version": original_stats_version,
+        "updated_at": original_updated_at,
+        "source": "incremental_v4"
+    }
+    
+    # B. Sync Status and Final formatting (Sync Spark asincrono)    
     # 4. Sync Status Check
-    # Default to "synced" - only show "syncing" if there's an explicit pending update
     sync_status = "synced"
     user = users_collection.find_one({"user_id": current_user_id}, {"data_updated_at": 1})
     stats_updated = stats.get("updated_at")
     
     if user and user.get("data_updated_at") and stats_updated:
-        # Both timestamps exist - compare them
         data_updated = user.get("data_updated_at")
         if data_updated > stats_updated:
             sync_status = "syncing"
     
     stats["sync_status"] = sync_status
     
-    # 5. Assicura campi quiz (preservati da $set)
-    stats.setdefault("quiz_correct_count", 0)
-    stats.setdefault("quiz_wrong_count", 0)
-    stats.setdefault("quiz_total_attempts", 0)
-    stats.setdefault("last_quiz_date", None)
+    # 5. Assicura campi quiz (Prende da users collection nested 'quiz')
+    user_doc = users_collection.find_one({"user_id": current_user_id}, {"quiz": 1}) or {}
+    quiz_data = user_doc.get("quiz", {})
+    
+    stats["quiz_correct_count"] = quiz_data.get("correct_count", 0)
+    stats["quiz_wrong_count"] = quiz_data.get("wrong_count", 0)
+    stats["quiz_total_attempts"] = quiz_data.get("total_attempts", 0)
+    stats["last_quiz_date"] = quiz_data.get("last_date")
 
     return mongo_to_dict(stats)
 
@@ -1238,6 +1507,44 @@ async def get_global_trends():
         }
         
     return mongo_to_dict(trends)
+
+
+@app.get("/user-stats/top-rated")
+async def get_top_rated_movies(
+    limit: int = 10,
+    current_user_id: str = Depends(get_current_user_id)
+):
+    """
+    🚀 LAZY ENDPOINT: Restituisce i film con rating >= 4, ordinati per rating.
+    Usato con schema incrementale V4 dove top_rated non è pre-calcolato.
+    """
+    # Query con indice su (user_id, rating)
+    movies = list(movies_collection.find(
+        {"user_id": current_user_id, "rating": {"$gte": 4}},
+        {"_id": 0, "user_id": 0}
+    ).sort("rating", -1).limit(limit))
+    
+    # Arricchisci con dati catalogo usando l'helper
+    return enrich_movie_data(movies)
+
+
+@app.get("/user-stats/recent")
+async def get_recent_movies(
+    limit: int = 10,
+    current_user_id: str = Depends(get_current_user_id)
+):
+    """
+    🚀 LAZY ENDPOINT: Restituisce i film più recenti per data di visione.
+    Usato con schema incrementale V4 dove recent_movies non è pre-calcolato.
+    """
+    # Query con indice su (user_id, date)
+    movies = list(movies_collection.find(
+        {"user_id": current_user_id},
+        {"_id": 0, "user_id": 0}
+    ).sort("date", -1).limit(limit))
+    
+    # Arricchisci con dati catalogo usando l'helper
+    return enrich_movie_data(movies)
 
 
 @app.get("/recommendations")
@@ -1305,13 +1612,11 @@ async def add_movie(movie: MovieCreate, background_tasks: BackgroundTasks, curre
         }}
     )
     
-    # Triggera ricalcolo statistiche via Spark
-    # Recupera tutti i film per inviare evento completo
-    all_movies = list(movies_collection.find({"user_id": current_user_id}))
-    
+    # O(1) INCREMENTALE: Invia SOLO il film appena aggiunto
+    # NON inviare tutti i film (causa doppi incrementi!)
     try:
         kafka_producer = get_kafka_producer()
-        kafka_producer.send_batch_event("RECALCULATE", current_user_id, all_movies)
+        kafka_producer.send_movie_event("ADD", current_user_id, entry)
     except Exception as e:
         print(f"⚠️ Errore invio Kafka: {e}")
     
@@ -1441,22 +1746,25 @@ async def get_movies_by_person(name: str, type: str, current_user_id: str = Depe
 async def get_monthly_stats(year: int, current_user_id: str = Depends(get_current_user_id)):
     """
     Ottiene le statistiche mensili per un anno specifico.
-    Ora legge da year_data nelle user_stats (calcolato da Spark).
+    Ora legge da year_data nelle user_stats o fa un sync real-time se richiesto.
     """
-    # 1. Leggi stats da DB
-    stats = stats_collection.find_one({"user_id": current_user_id}, {"_id": 0})
+    current_year = datetime.now(italy_tz).year
+    
+    # Se è l'anno corrente, forza sempre il sync real-time per massima precisione
+    if year == current_year:
+        realtime = await get_realtime_year_stats(current_user_id, year)
+        # Recupera available_years dalle stats per completare la risposta
+        stats = stats_collection.find_one({"user_id": current_user_id}, {"available_years": 1})
+        realtime["available_years"] = stats.get("available_years", [year]) if stats else [year]
+        return realtime
+
+    # Per anni passati, leggi da user_stats (che è stato popolato/migrato)
+    stats = stats_collection.find_one({"user_id": current_user_id}, {"year_data": 1, "available_years": 1, "_id": 0})
     
     if not stats:
-        # Fallback: nessuna stats, restituisci dati vuoti
-        months = ["Gen", "Feb", "Mar", "Apr", "Mag", "Giu", "Lug", "Ago", "Set", "Ott", "Nov", "Dic"]
-        return {
-            "year": year,
-            "monthly_data": [{"month": m, "films": 0} for m in months],
-            "total_films": 0,
-            "available_years": []
-        }
+        # Fallback totale
+        return await get_realtime_year_stats(current_user_id, year)
     
-    # 2. Cerca l'anno richiesto in year_data
     year_data = stats.get("year_data", [])
     available_years = stats.get("available_years", [])
     
@@ -1471,14 +1779,8 @@ async def get_monthly_stats(year: int, current_user_id: str = Depends(get_curren
             "available_years": available_years
         }
     else:
-        # Anno non trovato, restituisci dati vuoti
-        months = ["Gen", "Feb", "Mar", "Apr", "Mag", "Giu", "Lug", "Ago", "Set", "Ott", "Nov", "Dic"]
-        return {
-            "year": year,
-            "monthly_data": [{"month": m, "films": 0} for m in months],
-            "total_films": 0,
-            "available_years": available_years
-        }
+        # Se non trovato in stats ma anno passato, prova comunque un sync last-resort
+        return await get_realtime_year_stats(current_user_id, year)
 
 
 
@@ -1810,29 +2112,36 @@ async def add_movie_to_collection(
     
     if existing:
         # Se esiste, aggiorna commento e rating
-        rating_val = movie.rating if movie.rating and movie.rating > 0 else 1  # Rating minimo 1 stella
+        old_rating = existing.get("rating")
+        new_rating = movie.rating if movie.rating and movie.rating > 0 else 1  # Rating minimo 1 stella
+        
         movies_collection.update_one(
             {"_id": existing["_id"]},
             {"$set": {
-                "rating": rating_val,
+                "rating": new_rating,
                 "comment": movie.comment,
                 "updated_at": datetime.now(italy_tz).isoformat()
             }}
         )
         
-        # Aggiorna timestamp per invalidare cache e triggerare ricalcolo
+        # Aggiorna timestamp per invalidare cache
         users_collection.update_one(
             {"user_id": current_user_id},
             {"$set": {"data_updated_at": datetime.now(italy_tz).isoformat()}}
         )
         
-        # Triggera ricalcolo statistiche via Spark con batch RECALCULATE
-        all_movies = list(movies_collection.find({"user_id": current_user_id}))
-        try:
+        # O(1) INCREMENTALE: Se cambia il rating, usa UPDATE_RATING
+        # NON fare RECALCULATE che causa raddoppio delle statistiche!
+        if old_rating != new_rating:
             kafka_producer = get_kafka_producer()
-            kafka_producer.send_batch_event("RECALCULATE", current_user_id, all_movies)
-        except Exception as e:
-            print(f"⚠️ Errore invio Kafka: {e}")
+            kafka_producer.send_movie_event("UPDATE_RATING", current_user_id, {
+                "name": movie.name,
+                "year": movie.year,
+                "rating": new_rating,
+                "date": existing.get("date"),
+                "old_rating": old_rating,
+                "new_rating": new_rating
+            })
         
         return {"status": "success", "message": "Film aggiornato"}
     
@@ -1877,35 +2186,55 @@ async def update_user_movie(
     current_user_id: str = Depends(get_current_user_id)
 ):
     """Aggiorna voto o commento di un film nei 'visti'."""
+    
+    # O(1) INCREMENTALE: Recupera il film PRIMA per avere old_rating
+    existing = movies_collection.find_one({
+        "user_id": current_user_id,
+        "name": req.name,
+        "year": req.year
+    })
+    
+    if not existing:
+        raise HTTPException(status_code=404, detail="Film non trovato nei tuoi visti")
+    
+    old_rating = existing.get("rating")
+    
     update_data = {}
+    new_rating = None
     if req.rating is not None:
-        update_data["rating"] = req.rating if req.rating > 0 else 1  # Rating minimo 1 stella
-    if req.comment is not None: update_data["comment"] = req.comment
+        new_rating = req.rating if req.rating > 0 else 1  # Rating minimo 1 stella
+        update_data["rating"] = new_rating
+    if req.comment is not None: 
+        update_data["comment"] = req.comment
     update_data["updated_at"] = datetime.now(italy_tz).isoformat()
 
-    res = movies_collection.update_one(
-        {"user_id": current_user_id, "name": req.name, "year": req.year},
+    movies_collection.update_one(
+        {"_id": existing["_id"]},
         {"$set": update_data}
     )
     
-    if res.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Film non trovato nei tuoi visti")
-    
-    # Aggiorna timestamp per invalidare cache e triggerare ricalcolo
+    # Aggiorna timestamp per invalidare cache
     users_collection.update_one(
         {"user_id": current_user_id},
         {"$set": {"data_updated_at": datetime.now(italy_tz).isoformat()}}
     )
     
-    # Triggera ricalcolo statistiche via Spark con batch RECALCULATE
-    all_movies = list(movies_collection.find({"user_id": current_user_id}))
-    try:
-        kafka_producer = get_kafka_producer()
-        kafka_producer.send_batch_event("RECALCULATE", current_user_id, all_movies)
-    except Exception as e:
-        print(f"⚠️ Errore invio Kafka: {e}")
+    # O(1) INCREMENTALE: Se cambia solo il rating, usa UPDATE_RATING
+    # NON fare RECALCULATE che causa raddoppio delle statistiche!
+    kafka_producer = get_kafka_producer()
     
-    # Stats aggiornate via Kafka/Spark
+    if new_rating is not None and old_rating != new_rating:
+        # Invia UPDATE_RATING con old e new rating
+        kafka_producer.send_movie_event("UPDATE_RATING", current_user_id, {
+            "name": req.name,
+            "year": req.year,
+            "rating": new_rating,
+            "date": existing.get("date"),
+            "old_rating": old_rating,
+            "new_rating": new_rating
+        })
+    # Se cambia solo il commento, non serve aggiornare le statistiche
+    
     return {"status": "success"}
 
 
@@ -1915,19 +2244,28 @@ async def remove_movie_from_collection(
     current_user_id: str = Depends(get_current_user_id)
 ):
     """Rimuove un film dalla collezione dell'utente."""
-    result = movies_collection.delete_one({
+    
+    # O(1) INCREMENTALE: Recupera dati COMPLETI del film PRIMA di eliminarlo
+    # (servono rating e date per decrementare i contatori corretti)
+    existing_movie = movies_collection.find_one({
         "user_id": current_user_id,
         "name": movie.name,
         "year": movie.year
     })
     
-    if result.deleted_count == 0:
+    if not existing_movie:
         raise HTTPException(status_code=404, detail="Film non trovato nella collezione")
     
-    # Pubblica evento Kafka per elaborazione Spark
+    # Ora elimina
+    movies_collection.delete_one({"_id": existing_movie["_id"]})
+    
+    # Pubblica evento DELETE con TUTTI i dati necessari per decrementare
     kafka_producer = get_kafka_producer()
     kafka_producer.send_movie_event("DELETE", current_user_id, {
-        "name": movie.name, "year": movie.year
+        "name": existing_movie.get("name"),
+        "year": existing_movie.get("year"),
+        "rating": existing_movie.get("rating"),  # Necessario per rating_distribution
+        "date": existing_movie.get("date")       # Necessario per monthly_counts
     })
     
     # Aggiorna conteggio utente
@@ -1941,17 +2279,7 @@ async def remove_movie_from_collection(
         }
     )
     
-    # Triggera ricalcolo statistiche via Spark
-    # Recupera tutti i film rimanenti per inviare evento completo
-    all_movies = list(movies_collection.find({"user_id": current_user_id}))
-    
-    try:
-        # kafka_producer è già istanziato sopra
-        kafka_producer.send_batch_event("RECALCULATE", current_user_id, all_movies)
-    except Exception as e:
-        print(f"⚠️ Errore invio Kafka: {e}")
-    
-    # Stats aggiornate via Kafka/Spark
+    # NON fare RECALCULATE - il sistema O(1) decrementa atomicamente
     return {"message": "Film rimosso con successo"}
 
 
@@ -1961,34 +2289,45 @@ async def update_movie_rating(
     current_user_id: str = Depends(get_current_user_id)
 ):
     """Aggiorna il rating di un film nella collezione."""
-    rating_val = movie.rating if movie.rating and movie.rating > 0 else 1  # Rating minimo 1 stella
-    result = movies_collection.update_one(
-        {
-            "user_id": current_user_id,
-            "name": movie.name,
-            "year": movie.year
-        },
-        {"$set": {"rating": rating_val}}
-    )
     
-    if result.matched_count == 0:
+    # O(1) INCREMENTALE: recupera dati PRIMA dell'update per calcolare delta
+    existing = movies_collection.find_one({
+        "user_id": current_user_id,
+        "name": movie.name,
+        "year": movie.year
+    })
+    
+    if not existing:
         raise HTTPException(status_code=404, detail="Film non trovato nella collezione")
     
-    # Aggiorna timestamp per invalidare cache e triggerare ricalcolo
+    old_rating = existing.get("rating")
+    new_rating = movie.rating if movie.rating and movie.rating > 0 else 1
+    
+    # Aggiorna nel DB
+    movies_collection.update_one(
+        {"_id": existing["_id"]},
+        {"$set": {"rating": new_rating}}
+    )
+    
+    # Aggiorna timestamp
     users_collection.update_one(
         {"user_id": current_user_id},
         {"$set": {"data_updated_at": datetime.now(italy_tz).isoformat()}}
     )
     
-    # Triggera ricalcolo statistiche via Spark con batch RECALCULATE
-    all_movies = list(movies_collection.find({"user_id": current_user_id}))
-    try:
-        kafka_producer = get_kafka_producer()
-        kafka_producer.send_batch_event("RECALCULATE", current_user_id, all_movies)
-    except Exception as e:
-        print(f"⚠️ Errore invio Kafka: {e}")
+    # O(1) INCREMENTALE: Invia evento UPDATE_RATING con old_rating e new_rating
+    # Questo modifica SOLO rating_distribution e sum_ratings, non total_watched/genre_counts/etc.
+    kafka_producer = get_kafka_producer()
     
-    # Stats aggiornate via Kafka/Spark
+    kafka_producer.send_movie_event("UPDATE_RATING", current_user_id, {
+        "name": existing.get("name"),
+        "year": existing.get("year"),
+        "rating": new_rating,
+        "date": existing.get("date"),
+        "old_rating": old_rating,
+        "new_rating": new_rating
+    })
+    
     return {"message": "Rating aggiornato con successo"}
 
 
