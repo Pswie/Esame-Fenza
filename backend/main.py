@@ -26,6 +26,7 @@ from cinema_pipeline import run_full_pipeline
 from kafka_producer import get_kafka_producer
 from YoutubeComments import get_upcoming_movie_with_trailer
 from YoutubeComments2 import get_latest_comment_for_trailer
+from YoutubeComments3 import get_trailer_comments
 
 # ============================================
 # APP CONFIGURATION
@@ -655,6 +656,32 @@ async def get_latest_trailer_comment():
                 "status": "not_found",
                 "message": "Nessun commento trovato per questo trailer"
             }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
+@app.get("/trailer-comments")
+async def get_trailer_comments_endpoint(max_comments: int = 5):
+    """Ottiene multipli commenti validi dal trailer del film in uscita."""
+    try:
+        # Prima ottieni i dati del film per avere l'URL del trailer
+        movie_data = get_upcoming_movie_with_trailer()
+        if not movie_data or not movie_data.get("trailer_url"):
+            return {
+                "status": "not_found",
+                "message": "Nessun trailer disponibile"
+            }
+        
+        # Ottieni i commenti dal trailer
+        comments = get_trailer_comments(movie_data["trailer_url"], max_comments=max_comments)
+        
+        return {
+            "status": "success",
+            "data": comments,
+            "count": len(comments)
+        }
     except Exception as e:
         return {
             "status": "error",

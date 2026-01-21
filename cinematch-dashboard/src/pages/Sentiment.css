@@ -357,3 +357,46 @@
     font-style: italic;
     margin: 0;
 }
+
+/* Multiple Comments Section Styles */
+.comments-loading,
+.comments-error {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 200px;
+    color: var(--text-secondary);
+    font-size: 1rem;
+}
+
+.youtube-comment-card {
+    background: var(--glass-bg);
+    border-radius: 12px;
+    padding: 16px;
+    border-left: 4px solid #ff0000;
+}
+
+.youtube-comment-card .post-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+}
+
+.youtube-comment-card .subreddit {
+    font-weight: 600;
+    color: var(--accent-primary);
+}
+
+.youtube-comment-card .post-date {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+.comment-text-content {
+    font-size: 1rem;
+    line-height: 1.6;
+    color: var(--text-primary);
+    font-style: italic;
+    margin: 0;
+}

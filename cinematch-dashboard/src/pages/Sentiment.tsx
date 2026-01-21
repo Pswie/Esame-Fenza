@@ -28,10 +28,13 @@ interface CommentData {
 export function Sentiment() {
     const [movieData, setMovieData] = useState<MovieData | null>(null);
     const [commentData, setCommentData] = useState<CommentData | null>(null);
+    const [commentsData, setCommentsData] = useState<CommentData[]>([]);
     const [loading, setLoading] = useState(true);
     const [commentLoading, setCommentLoading] = useState(true);
+    const [commentsLoading, setCommentsLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [commentError, setCommentError] = useState<string | null>(null);
+    const [commentsError, setCommentsError] = useState<string | null>(null);
 
     useEffect(() => {
         const fetchMovieData = async () => {
@@ -70,8 +73,27 @@ export function Sentiment() {
             }
         };
 
+        const fetchCommentsData = async () => {
+            try {
+                const response = await fetch('http://localhost:8000/trailer-comments?max_comments=5');
+                const result = await response.json();
+
+                if (result.status === 'success' && result.data) {
+                    setCommentsData(result.data);
+                } else {
+                    setCommentsError(result.message || 'Nessun commento trovato');
+                }
+            } catch (err) {
+                setCommentsError('Errore di connessione al server');
+                console.error('Error fetching comments data:', err);
+            } finally {
+                setCommentsLoading(false);
+            }
+        };
+
         fetchMovieData();
         fetchCommentData();
+        fetchCommentsData();
     }, []);
 
     const getSentimentColor = (sentiment: string) => {
@@ -230,28 +252,26 @@ export function Sentiment() {
             </div>
 
             <div className="posts-section">
-                <h3>📝 Post Recenti Analizzati</h3>
-                <div className="posts-list">
-                    {sentimentPosts.map((post) => (
-                        <div key={post.id} className="post-card">
-                            <div className="post-header">
-                                <span className="subreddit">{post.subreddit}</span>
-                                <span
-                                    className="sentiment-badge"
-                                    style={{ background: getSentimentColor(post.sentiment) }}
-                                >
-                                    {post.sentiment === 'positive' ? '😊' : post.sentiment === 'negative' ? '😔' : '😐'}
-                                    {(post.sentimentScore * 100).toFixed(0)}%
-                                </span>
+                <h3>📝 Commenti Analizzati</h3>
+                {commentsLoading ? (
+                    <div className="comments-loading">Caricamento commenti...</div>
+                ) : commentsError ? (
+                    <div className="comments-error">⚠️ {commentsError}</div>
+                ) : commentsData.length === 0 ? (
+                    <div className="comments-error">Nessun commento trovato</div>
+                ) : (
+                    <div className="posts-list">
+                        {commentsData.map((comment, index) => (
+                            <div key={index} className="post-card youtube-comment-card">
+                                <div className="post-header">
+                                    <span className="subreddit">👤 {comment.author}</span>
+                                    <span className="post-date">📅 {formatDateTime(comment.published_at)}</span>
+                                </div>
+                                <p className="comment-text-content">"{comment.text}"</p>
                             </div>
-                            <h4 className="post-title">{post.title}</h4>
-                            <div className="post-footer">
-                                <span className="post-score">⬆️ {post.score.toLocaleString()}</span>
-                                <span className="post-date">{post.date}</span>
-                            </div>
-                        </div>
-                    ))}
-                </div>
+                        ))}
+                    </div>
+                )}
             </div>
         </div>
     );
