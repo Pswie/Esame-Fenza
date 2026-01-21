@@ -1002,7 +1002,7 @@ export function Dashboard() {
 
                         <div className="modal-header">
                             <h2>{selectedPerson.type === 'director' ? '🎬 Film di' : '🌟 Film con'} {selectedPerson.name}</h2>
-                            <p>Hai visto {selectedPerson.actualCount || personMovies.length} film con questo {selectedPerson.type === 'director' ? 'regista' : 'attore'}</p>
+                            <p>Hai visto {personMovies.length} film con questo {selectedPerson.type === 'director' ? 'regista' : 'attore'}</p>
                         </div>
 
                         {loadingPersonMovies ? (

@@ -266,7 +266,7 @@ def process_partition_incremental(iterator):
                         # Actors
                         if actors_str:
                             actors_list = [a.strip() for a in re.split(r'[,|]', actors_str) if a.strip()]
-                            for actor in actors_list[:5]:
+                            for actor in actors_list[:15]:  # Aumentato da 5 a 15 per catturare più cast
                                 actor_key = clean_key(actor)
                                 affinity_id = f"{user_id}_actor_{actor_key}"
                                 if affinity_id not in user_affinities_inc:
@@ -334,7 +334,7 @@ def process_partition_incremental(iterator):
                     # └─────────────────────────────────────────────────────────┘
                     if actors_str:
                         actors_list = [a.strip() for a in re.split(r'[,|]', actors_str) if a.strip()]
-                        for actor in actors_list[:5]:
+                        for actor in actors_list[:15]:  # Aumentato da 5 a 15 per catturare più cast
                             actor_key = clean_key(actor)
                             affinity_id = f"{user_id}_actor_{actor_key}"
                             
@@ -1193,10 +1193,12 @@ def compute_user_stats(movies, catalog_collection, prefetched_map=None):
     
     director_stats_list = []
     for d, ratings_list in director_ratings.items():
+        total_count = director_counter.get(d, 0)  # Film totali con questo regista
         valid_ratings = [r for r in ratings_list if r is not None]
-        if len(valid_ratings) >= 1:
-            avg = round(sum(valid_ratings) / len(valid_ratings), 1)
-            director_stats_list.append({"name": d, "count": len(valid_ratings), "avg_rating": avg})
+        # Include direttori con almeno 1 film visto (anche senza rating)
+        if total_count >= 1:
+            avg = round(sum(valid_ratings) / len(valid_ratings), 1) if valid_ratings else 0
+            director_stats_list.append({"name": d, "count": total_count, "avg_rating": avg})
             
     # Most Watched (Top 15 per count)
     director_stats_list.sort(key=lambda x: x["count"], reverse=True)
@@ -1213,10 +1215,12 @@ def compute_user_stats(movies, catalog_collection, prefetched_map=None):
     # 9. Best Rated Actors & Most Watched Actors
     actor_stats_list = []
     for a, ratings_list in actor_ratings.items():
+        total_count = actor_counter.get(a, 0)  # Film totali con questo attore
         valid_ratings = [r for r in ratings_list if r is not None]
-        if len(valid_ratings) >= 1:
-            avg = round(sum(valid_ratings) / len(valid_ratings), 1)
-            actor_stats_list.append({"name": a, "count": len(valid_ratings), "avg_rating": avg})
+        # Include attori con almeno 1 film visto (anche senza rating)
+        if total_count >= 1:
+            avg = round(sum(valid_ratings) / len(valid_ratings), 1) if valid_ratings else 0
+            actor_stats_list.append({"name": a, "count": total_count, "avg_rating": avg})
             
     # Most Watched (Top 15 per count)
     actor_stats_list.sort(key=lambda x: x["count"], reverse=True)
