@@ -8,6 +8,7 @@ from datetime import datetime
 import re
 import html
 import os
+import hashlib
 
 # Import del modulo per il calcolo del sentiment
 try:
@@ -102,6 +103,8 @@ def get_mongodb_client():
         return None
 
 
+
+
 def save_comments_to_mongodb(comments: list) -> bool:
     """
     Salva i commenti nella collezione CommentiYoutube di MongoDB.
@@ -118,8 +121,8 @@ def save_comments_to_mongodb(comments: list) -> bool:
             # Genera un ID unico basato sul contenuto del commento per evitare duplicati
             text = c.get("text", "")
             author = c.get("author", "unknown")
-            # Usa hash del testo per ID univoco (evita duplicati)
-            text_hash = hash(text) & 0xffffffff  # Converte in positivo
+            # Usa hash MD5 del testo per ID univoco e stabile
+            text_hash = hashlib.md5(text.encode("utf-8")).hexdigest()
             comment_id = f"yt3_{author}_{text_hash}"
             
             doc = {
@@ -224,7 +227,7 @@ def get_multiple_comments(youtube_url: str, max_comments: int = 5, min_chars: in
                     for comment in collected:
                         text = comment.get("text", "")
                         author = comment.get("author", "unknown")
-                        text_hash = hash(text) & 0xffffffff
+                        text_hash = hashlib.md5(text.encode("utf-8")).hexdigest()
                         comment_id = f"yt3_{author}_{text_hash}"
                         
                         doc = collection.find_one({"_id": comment_id})
