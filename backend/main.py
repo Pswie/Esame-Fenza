@@ -1779,40 +1779,102 @@ async def get_recent_movies(
         {"_id": 0, "user_id": 0}
     ).sort("date", -1).limit(limit))
     
-    # Arricchisci con dati catalogo usando l'helper
+        # Arricchisci con dati catalogo usando l'helper
     return enrich_movie_data(movies)
 
 
 @app.get("/recommendations")
-async def get_recommendations(current_user_id: str = Depends(get_current_user_id)):
+async def get_user_recommendations(
+    page: int = 1,
+    page_size: int = 22,
+    force_refresh: bool = False,
+    current_user_id: str = Depends(get_current_user_id)
+):
     """
-    Get personalized movie recommendations for the user.
-    Returns 6 recommended + 3 not-recommended films based on user's taste profile.
+    Genera raccomandazioni personalizzate paginate per l'utente autenticato.
+    Usa il recommendation_service.py con FAISS e embedding BGE.
+    
+    Args:
+        page: Numero pagina (1-indexed), default=1
+        page_size: Elementi per pagina, default=22
+        force_refresh: Forza rigenerazione raccomandazioni
+        
+    Returns:
+        - recommended: Lista film raccomandati per la pagina richiesta
+        - not_recommended: Lista film non raccomandati (sempre completa)
+        - matched_films: Numero film matchati nel catalogo
+        - total_films: Numero totale film utente
+        - pagination: Metadati paginazione
     """
     from recommendation_service import get_recommendation_service
+    from fastapi import HTTPException
+    import traceback
+    
+    # Validate pagination params
+    if page < 1:
+        raise HTTPException(status_code=400, detail="Page must be >= 1")
+    if page_size < 1 or page_size > 100:
+        raise HTTPException(status_code=400, detail="Page size must be between 1 and 100")
     
     try:
         service = get_recommendation_service()
-        result = await run_in_threadpool(service.get_recommendations, current_user_id)
+        result = await run_in_threadpool(
+            service.get_recommendations,
+            user_id=current_user_id,
+            force_refresh=force_refresh
+        )
         
-        if result.get("error"):
-            # Return empty lists with error message
+        if "error" in result:
+            # Error case: no data or catalog mismatch
             return {
+                "message": result.get("error"),
                 "recommended": [],
                 "not_recommended": [],
-                "message": result["error"],
                 "matched_films": result.get("matched_films", 0),
-                "total_films": result.get("total_films", 0)
+                "total_films": result.get("total_films", 0),
+                "pagination": {
+                    "current_page": page,
+                    "page_size": page_size,
+                    "total_items": 0,
+                    "total_pages": 0,
+                    "has_next": False
+                }
             }
         
-        return result
-    except Exception as e:
-        print(f"❌ Recommendation error: {e}")
+        # Apply pagination to recommended movies
+        recommended = result.get("recommended", [])
+        total_items = len(recommended)
+        total_pages = (total_items + page_size - 1) // page_size  # Ceiling division
+        
+        # Calculate slice indices
+        start_idx = (page - 1) * page_size
+        end_idx = start_idx + page_size
+        
+        # Slice recommended list
+        paginated_recommended = recommended[start_idx:end_idx]
+        
         return {
-            "recommended": [],
-            "not_recommended": [],
-            "message": f"Error generating recommendations: {str(e)}"
+            "recommended": paginated_recommended,
+            "not_recommended": result.get("not_recommended", []),  # Always full list
+            "matched_films": result.get("matched_films", 0),
+            "total_films": result.get("total_films", 0),
+            "cached": result.get("cached", False),
+            "pagination": {
+                "current_page": page,
+                "page_size": page_size,
+                "total_items": total_items,
+                "total_pages": total_pages,
+                "has_next": page < total_pages
+            }
         }
+        
+    except Exception as e:
+        print(f"❌ Errore generazione raccomandazioni: {e}")
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Errore nella generazione delle raccomandazioni: {str(e)}"
+        )
 
 class MovieCreate(BaseModel):
     name: str
@@ -1821,6 +1883,7 @@ class MovieCreate(BaseModel):
     date: Optional[str] = None
     review: Optional[str] = None
     imdb_id: Optional[str] = None # Link forte al catalogo
+
 
 @app.post("/movies")
 async def add_movie(movie: MovieCreate, background_tasks: BackgroundTasks, current_user_id: str = Depends(get_current_user_id)):

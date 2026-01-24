@@ -25,65 +25,99 @@ export function Recommendations() {
     const [recommendedMovies, setRecommendedMovies] = useState<Movie[]>([]);
     const [notRecommendedMovies, setNotRecommendedMovies] = useState<Movie[]>([]);
     const [loading, setLoading] = useState(true);
+    const [loadingMore, setLoadingMore] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [matchedFilms, setMatchedFilms] = useState(0);
     const [totalFilms, setTotalFilms] = useState(0);
 
-    useEffect(() => {
-        const fetchRecommendations = async () => {
-            try {
+    // Pagination state
+    const [currentPage, setCurrentPage] = useState(1);
+    const [totalPages, setTotalPages] = useState(1);
+    const [hasNext, setHasNext] = useState(false);
+
+
+    // Fetch recommendations with pagination support
+    const fetchRecommendations = async (page: number = 1, append: boolean = false) => {
+        try {
+            if (append) {
+                setLoadingMore(true);
+            } else {
                 setLoading(true);
-                setError(null);
+            }
+            setError(null);
 
-                const token = localStorage.getItem('token');
-                if (!token) {
-                    setError('Devi effettuare il login per vedere le raccomandazioni');
-                    setLoading(false);
-                    return;
+            const token = localStorage.getItem('token');
+            if (!token) {
+                setError('Devi effettuare il login per vedere le raccomandazioni');
+                setLoading(false);
+                return;
+            }
+
+            const response = await fetch(`${API_BASE_URL}/recommendations?page=${page}&page_size=22`, {
+                headers: {
+                    'Authorization': `Bearer ${token}`
                 }
+            });
 
-                const response = await fetch(`${API_BASE_URL}/recommendations`, {
-                    headers: {
-                        'Authorization': `Bearer ${token}`
-                    }
+            if (!response.ok) {
+                throw new Error('Errore nel caricamento delle raccomandazioni');
+            }
+
+            const data = await response.json();
+
+            if (data.message && data.recommended.length === 0) {
+                setError(data.message);
+            } else {
+                // Transform API response to match Movie interface
+                const transformMovie = (m: any, index: number): Movie => ({
+                    id: index + 1,
+                    imdb_id: m.imdb_id,
+                    title: m.title || 'Unknown',
+                    year: m.year || 0,
+                    poster: m.poster || 'https://via.placeholder.com/500x750/1a1a2e/e50914?text=No+Poster',
+                    rating: m.rating || 0,
+                    genres: Array.isArray(m.genres) ? m.genres : [],
+                    director: m.director || '',
+                    matchScore: m.matchScore || 0
                 });
 
-                if (!response.ok) {
-                    throw new Error('Errore nel caricamento delle raccomandazioni');
-                }
-
-                const data = await response.json();
-
-                if (data.message && data.recommended.length === 0) {
-                    setError(data.message);
+                if (append) {
+                    // Append new movies to existing list
+                    setRecommendedMovies(prev => [...prev, ...data.recommended.map(transformMovie)]);
                 } else {
-                    // Transform API response to match Movie interface
-                    const transformMovie = (m: any, index: number): Movie => ({
-                        id: index + 1,
-                        imdb_id: m.imdb_id,
-                        title: m.title || 'Unknown',
-                        year: m.year || 0,
-                        poster: m.poster || 'https://via.placeholder.com/500x750/1a1a2e/e50914?text=No+Poster',
-                        rating: m.rating || 0,
-                        genres: Array.isArray(m.genres) ? m.genres : [],
-                        director: m.director || '',
-                        matchScore: m.matchScore || 0
-                    });
-
+                    // Replace with new movies (first load)
                     setRecommendedMovies(data.recommended.map(transformMovie));
                     setNotRecommendedMovies(data.not_recommended.map(transformMovie));
-                    setMatchedFilms(data.matched_films || 0);
-                    setTotalFilms(data.total_films || 0);
                 }
-            } catch (err) {
-                console.error('Error fetching recommendations:', err);
-                setError('Errore nel caricamento delle raccomandazioni');
-            } finally {
-                setLoading(false);
-            }
-        };
 
-        fetchRecommendations();
+                setMatchedFilms(data.matched_films || 0);
+                setTotalFilms(data.total_films || 0);
+
+                // Update pagination state
+                if (data.pagination) {
+                    setCurrentPage(data.pagination.current_page);
+                    setTotalPages(data.pagination.total_pages);
+                    setHasNext(data.pagination.has_next);
+                }
+            }
+        } catch (err) {
+            console.error('Error fetching recommendations:', err);
+            setError('Errore nel caricamento delle raccomandazioni');
+        } finally {
+            setLoading(false);
+            setLoadingMore(false);
+        }
+    };
+
+    // Load more handler
+    const handleLoadMore = () => {
+        if (hasNext && !loadingMore) {
+            fetchRecommendations(currentPage + 1, true);
+        }
+    };
+
+    useEffect(() => {
+        fetchRecommendations(1, false);
     }, []);
 
     const filterMovies = (movies: Movie[]) => {
@@ -184,6 +218,7 @@ export function Recommendations() {
                 </div>
             </div>
 
+
             <div className="movies-section">
                 <div className="section-header">
                     <h2>
@@ -192,27 +227,72 @@ export function Recommendations() {
                     <span className="movie-count">{displayedMovies.length} film</span>
                 </div>
 
-                <div className="movies-grid">
-                    {displayedMovies.map((movie, index) => (
-                        <div
-                            key={movie.imdb_id || movie.id}
-                            style={{ animationDelay: `${index * 0.1}s` }}
-                            onClick={() => handleMovieClick(movie)}
-                        >
-                            <MovieCard
-                                movie={movie}
-                                showMatchScore={false}
-                                variant={view === 'recommended' ? 'recommended' : 'not-recommended'}
-                            />
+                {/* Grid for recommended movies */}
+                {view === 'recommended' ? (
+                    <>
+                        <div className="movies-grid">
+                            {displayedMovies.map((movie, index) => (
+                                <div
+                                    key={movie.imdb_id || movie.id}
+                                    style={{ animationDelay: `${index * 0.1}s` }}
+                                    onClick={() => handleMovieClick(movie)}
+                                >
+                                    <MovieCard
+                                        movie={movie}
+                                        showMatchScore={false}
+                                        variant="recommended"
+                                    />
+                                </div>
+                            ))}
                         </div>
-                    ))}
-                </div>
 
-                {displayedMovies.length === 0 && (
-                    <div className="no-results">
-                        <span className="no-results-icon">🎬</span>
-                        <p>Nessun film trovato per questo genere</p>
-                    </div>
+                        {displayedMovies.length === 0 && (
+                            <div className="no-results">
+                                <span className="no-results-icon">🎬</span>
+                                <p>Nessun film trovato per questo genere</p>
+                            </div>
+                        )}
+
+                        {/* Load More Button - Only for recommended view  */}
+                        {hasNext && !loading && (
+                            <div className="load-more-container">
+                                <button
+                                    onClick={handleLoadMore}
+                                    disabled={loadingMore}
+                                    className="load-more-btn"
+                                >
+                                    {loadingMore ? '⏳ Caricamento...' : 'Carica Altro ▼'}
+                                </button>
+                            </div>
+                        )}
+                    </>
+                ) : (
+                    /* Large centered grid for not-recommended movies */
+                    <>
+                        <div className="not-recommended-grid">
+                            {displayedMovies.map((movie, index) => (
+                                <div
+                                    key={movie.imdb_id || movie.id}
+                                    className="not-recommended-card"
+                                    style={{ animationDelay: `${index * 0.15}s` }}
+                                    onClick={() => handleMovieClick(movie)}
+                                >
+                                    <MovieCard
+                                        movie={movie}
+                                        showMatchScore={false}
+                                        variant="not-recommended"
+                                    />
+                                </div>
+                            ))}
+                        </div>
+
+                        {displayedMovies.length === 0 && (
+                            <div className="no-results">
+                                <span className="no-results-icon">🎬</span>
+                                <p>Nessun film trovato per questo genere</p>
+                            </div>
+                        )}
+                    </>
                 )}
             </div>
 
