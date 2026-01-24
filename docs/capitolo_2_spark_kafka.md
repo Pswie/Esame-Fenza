@@ -165,7 +165,164 @@ Un singolo documento contiene l'istantanea attuale dei trend.
 
 ---
 
-## 2.5 Riepilogo Architetturale
+## 2.5 Diagrammi di Flusso e Schema Eventi
+
+### 📊 Flusso Dati: User Stats (Statistiche Personali)
+
+Il seguente diagramma illustra come un'interazione utente (visione o voto di un film) si trasforma in statistiche persistenti:
+
+```mermaid
+flowchart LR
+    subgraph Frontend
+        A[👤 Utente]
+    end
+    
+    subgraph Backend [Backend FastAPI]
+        B[API Endpoint<br/>/movies/add]
+        C[kafka_producer.py<br/>send_movie_event]
+    end
+    
+    subgraph MessageBroker [Message Broker]
+        D[Kafka Topic<br/>user-movie-events]
+    end
+    
+    subgraph SparkCluster [Spark Cluster]
+        E[readStream<br/>Kafka Consumer]
+        F[process_batch<br/>foreachBatch]
+        G[Catalog Lookup<br/>movies_catalog]
+    end
+    
+    subgraph Database [MongoDB]
+        H[(user_stats)]
+        I[(user_affinities)]
+    end
+    
+    subgraph UI [Dashboard]
+        J[📈 Stats Personali]
+    end
+    
+    A -->|Vota/Aggiunge Film| B
+    B -->|Trigger| C
+    C -->|Produce Event| D
+    D -->|Consume| E
+    E -->|Micro-batch| F
+    F -->|Query Metadati| G
+    F -->|$inc atomico| H
+    F -->|$inc atomico| I
+    H --> J
+    I --> J
+```
+
+**Caratteristiche chiave**:
+- **Lazy Evaluation**: La definizione del flusso (readStream → trasformazioni) non esegue nulla fino al `writeStream`
+- **Micro-batch Processing**: Spark accumula eventi per ~10 secondi, poi li processa insieme
+- **Aggiornamento O(1)**: Usa operatori `$inc` di MongoDB, non ricalcola mai l'intero storico
+
+---
+
+### 📊 Flusso Dati: Global Stats (Statistiche Globali)
+
+Le statistiche globali (Top Film, Trending Genres) richiedono un approccio diverso per garantire coerenza:
+
+```mermaid
+flowchart TB
+    subgraph Bootstrap [🚀 Fase Bootstrap - All'Avvio]
+        A1[(MongoDB<br/>users.watched_movies)] -->|Aggregation Pipeline| B1[Conta tutti i film<br/>per tutti gli utenti]
+        B1 -->|Inizializza| C1[movie_counts<br/>genre_counts<br/>in-memory]
+    end
+    
+    subgraph Streaming [🔄 Fase Streaming - Runtime]
+        D1[Kafka Events<br/>ADD/DELETE] -->|readStream| E1[Spark Streaming]
+        E1 -->|Evento ADD| F1["+1 al contatore"]
+        E1 -->|Evento DELETE| G1["-1 al contatore"]
+        F1 --> H1[movie_counts<br/>aggiornato]
+        G1 --> H1
+    end
+    
+    subgraph Persistence [💾 Persistenza]
+        H1 -->|sort descending| I1[Top 10 Movies]
+        H1 -->|group by genre| J1[Trending Genres %]
+        I1 --> K1[(global_stats<br/>Collection)]
+        J1 --> K1
+    end
+    
+    subgraph Dashboard [📊 Visualizzazione]
+        K1 --> L1[Admin Dashboard<br/>Trend Globali]
+    end
+    
+    C1 -.->|Stato Iniziale| H1
+```
+
+**Caratteristiche chiave**:
+- **Bootstrap on Startup**: Necessario perché Kafka ha retention limitata (7 giorni default)
+- **Streaming Incrementale**: Dopo il bootstrap, aggiorna solo i delta (+1/-1)
+- **Stato In-Memory**: I contatori vivono in memoria Spark, persistiti periodicamente
+
+---
+
+### 📦 Schema Eventi Kafka
+
+Ogni interazione utente genera un evento JSON strutturato sul topic `user-movie-events`:
+
+```json
+{
+  "user_id": "pasquale.langellotti",
+  "timestamp": "2024-01-24T16:30:00+01:00",
+  "events": [
+    {
+      "event_type": "ADD",
+      "title": "Oppenheimer",
+      "rating": 5,
+      "runtime_minutes": 180,
+      "poster_path": "https://image.tmdb.org/t/p/w500/..."
+    }
+  ]
+}
+```
+
+| Campo | Tipo | Descrizione |
+|:------|:-----|:------------|
+| `user_id` | string | Identificativo univoco utente |
+| `timestamp` | ISO 8601 | Momento generazione evento |
+| `events` | array | Lista di azioni (supporta batch) |
+| `events[].event_type` | enum | `ADD` (nuovo film), `DELETE` (rimosso), `RECALCULATE` (aggiorna voto) |
+| `events[].title` | string | Titolo film (chiave primaria per lookup) |
+| `events[].rating` | int (1-5) | Voto assegnato (opzionale per DELETE) |
+| `events[].runtime_minutes` | int | Durata film in minuti |
+| `events[].poster_path` | string | URL poster per visualizzazione |
+
+**Esempio evento DELETE**:
+```json
+{
+  "user_id": "pasquale.langellotti",
+  "timestamp": "2024-01-24T17:00:00+01:00",
+  "events": [
+    {
+      "event_type": "DELETE",
+      "title": "Oppenheimer"
+    }
+  ]
+}
+```
+
+---
+
+### 📋 Confronto: Micro-Batch vs Streaming Incrementale
+
+| Aspetto | User Stats (Micro-Batch) | Global Stats (Streaming) |
+|:--------|:-------------------------|:-------------------------|
+| **Trigger** | `foreachBatch` ogni ~10s | `foreach` su ogni evento |
+| **Stato** | Stateless (query MongoDB per storico) | Stateful (contatori in-memory) |
+| **Bootstrap** | ❌ Non necessario | ✅ Richiesto all'avvio |
+| **Catalog Lookup** | ✅ Sì (metadati regista/attori) | ❌ No (usa dati evento) |
+| **Scalabilità** | Orizzontale (partition by user_id) | Verticale (stato centralizzato) |
+| **Latenza** | ~10-15 secondi | ~2-5 secondi |
+| **Recovery** | Automatico (stato in MongoDB) | Bootstrap + replay Kafka |
+| **Use Case** | Statistiche personali dettagliate | Classifiche e trend real-time |
+
+---
+
+## 2.6 Riepilogo Architetturale
 
 | Componente | Ruolo | Tecnologia | Esecuzione |
 | :--- | :--- | :--- | :--- |
