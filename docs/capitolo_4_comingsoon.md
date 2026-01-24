@@ -127,7 +127,7 @@ def save_to_mongodb(data: List[Dict]):
         
         # Operazione atomica di UPSERT
         collection.update_one(
-            {"film_id": film_id},
+            {"film_id": film_id},v
             {"$set": update_set},
             upsert=True
         )
