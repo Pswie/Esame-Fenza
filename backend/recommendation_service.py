@@ -33,10 +33,12 @@ MAPPING_FILE = "/app/data/faiss_bge_mapping.pkl"
 
 # Recommendation params
 TOP_K_CANDIDATES = 500
-N_RECOMMENDATIONS = 11
+N_RECOMMENDATIONS = 66  # Total recommendations to generate (displayed 22 at a time)
+PAGE_SIZE = 22          # Items per page for frontend pagination
+MAX_PAGES = 3           # 66 / 22 = 3 pages
 N_NOT_RECOMMENDED = 3
 MIN_YEAR_NOT_REC = 2010
-MIN_VOTES_NOT_REC = 5000
+MIN_VOTES_NOT_REC = 10000
 
 # Explicit query params (deterministico, niente random)
 TOP_N_DIRECTORS = 5        # Top 5 registi preferiti
