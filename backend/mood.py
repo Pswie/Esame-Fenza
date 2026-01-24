@@ -37,14 +37,15 @@ MIN_VOTES = 20000
 # MAPPING MOOD → GENRES
 # ============================================
 # Centralizzato in una costante per facile manutenzione
+# IMPORTANTE: I generi devono corrispondere al case usato nel catalogo MongoDB (prima lettera maiuscola)
 
 MOOD_GENRE_MAPPING = {
-    "felice": ["comedy"],
-    "malinconico": ["drama"],
-    "eccitato": ["action", "adventure", "fantasy"],
-    "rilassato": ["animation", "history"],
-    "romantico": ["romance"],
-    "thriller": ["thriller", "horror"]
+    "felice": ["Comedy"],
+    "malinconico": ["Drama"],
+    "eccitato": ["Action", "Adventure", "Fantasy"],
+    "rilassato": ["Animation", "History"],
+    "romantico": ["Romance"],
+    "thriller": ["Thriller", "Horror"]
 }
 
 
@@ -88,7 +89,7 @@ def generate_mood_recommendations() -> None:
                 "$match": {
                     "avg_vote": {"$gte": MIN_AVG_VOTE},
                     "votes": {"$gte": MIN_VOTES},
-                    "genres": {"$elemMatch": {"$in": genres}}  # Almeno uno dei generi del mood
+                    "genres": {"$in": genres}  # Almeno uno dei generi del mood
                 }
             },
             {
