@@ -33,7 +33,7 @@ MAPPING_FILE = "/app/data/faiss_bge_mapping.pkl"
 
 # Recommendation params
 TOP_K_CANDIDATES = 500
-N_RECOMMENDATIONS = 66  # Total recommendations to generate (displayed 22 at a time)
+N_RECOMMENDATIONS = 66  # Total recommendations to generate
 PAGE_SIZE = 22          # Items per page for frontend pagination
 MAX_PAGES = 3           # 66 / 22 = 3 pages
 N_NOT_RECOMMENDED = 3
@@ -423,7 +423,8 @@ class RecommendationService:
             for doc in self.db[COLL_CATALOG].find(
                 {"imdb_id": {"$in": all_candidate_ids}},
                 {"imdb_id": 1, "avg_vote": 1, "votes": 1, "title": 1, "original_title": 1, 
-                 "year": 1, "genres": 1, "director": 1, "poster_url": 1, "description": 1}
+                 "year": 1, "genres": 1, "director": 1, "poster_url": 1, 
+                 "description": 1, "quality_score": 1}
             )
         }
         
@@ -457,20 +458,31 @@ class RecommendationService:
                                 sim_actors * W_ACTORS + 
                                 sim_director * W_DIRECTOR)
             
-            # Quality score
+            # Quality score (Use precomputed or fallback)
             avg_vote = 5.0
             votes = 0
-            if catalog:
-                try:
-                    avg_vote = float(catalog.get("avg_vote", 5.0))
-                except (ValueError, TypeError):
-                    avg_vote = 5.0
-                try:
-                    votes = int(catalog.get("votes", 0))
-                except (ValueError, TypeError):
-                    votes = 0
+            quality_score = 0.5
             
-            quality_score = self._calculate_quality_score(avg_vote, votes)
+            if catalog:
+                # Try to get precomputed score
+                if "quality_score" in catalog and catalog["quality_score"] is not None:
+                    quality_score = float(catalog["quality_score"])
+                else:
+                    # Fallback calculation
+                    try:
+                        avg_vote = float(catalog.get("avg_vote", 5.0))
+                    except (ValueError, TypeError):
+                        avg_vote = 5.0
+                    try:
+                        votes = int(catalog.get("votes", 0))
+                    except (ValueError, TypeError):
+                        votes = 0
+                    quality_score = self._calculate_quality_score(avg_vote, votes)
+                
+                # Update avg_vote/votes for display
+                avg_vote = catalog.get("avg_vote", 5.0)
+                votes = catalog.get("votes", 0)
+
             final_score = ALPHA_SIMILARITY * similarity_score + BETA_QUALITY * quality_score
             
             # Get title and other info from catalog
@@ -539,9 +551,16 @@ class RecommendationService:
                                 sim_director * W_DIRECTOR)
             
             # Quality score
+            quality_score = 0.5
+            if cand.get("quality_score") is not None:
+                 quality_score = float(cand["quality_score"])
+            else:
+                avg_vote = float(cand.get("avg_vote", 5.0)) if cand.get("avg_vote") else 5.0
+                votes = int(cand.get("votes", 0)) if cand.get("votes") else 0
+                quality_score = self._calculate_quality_score(avg_vote, votes)
+            
             avg_vote = float(cand.get("avg_vote", 5.0)) if cand.get("avg_vote") else 5.0
             votes = int(cand.get("votes", 0)) if cand.get("votes") else 0
-            quality_score = self._calculate_quality_score(avg_vote, votes)
             
             # Not-rec score: low similarity + high quality
             dissimilarity_score = 1.0 - similarity_score
