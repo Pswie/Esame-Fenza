@@ -21,7 +21,7 @@ warnings.filterwarnings("ignore")
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from sklearn.preprocessing import MultiLabelBinarizer
-from pymongo import MongoClient
+from pymongo import MongoClient, UpdateOne
 
 try:
     import faiss
@@ -268,9 +268,47 @@ def main():
     # 4. Save to MongoDB
     print("\n[6/7] Salvataggio nuovi embeddings in MongoDB...")
     coll = client[DB_NAME][COLL_VECTORS]
+    coll_catalog = client[DB_NAME][COLL_CATALOG]
+    
     if new_docs:
         coll.insert_many(new_docs)
-        print(f"      ✅ Salvati {len(new_docs)} nuovi documenti")
+        print(f"      ✅ Salvati {len(new_docs)} nuovi embeddings")
+        
+        # Calculate and update quality_score for new films in catalog
+        print(f"      Calcolo quality_score per {len(missing_films)} nuovi film...")
+        
+        # Parametri Formula Bayesiana
+        MIN_VOTES = 1000
+        GLOBAL_MEAN = 6.0
+        
+        updates = []
+        for m in missing_films:
+            # Recupera valori (con gestione null simili a calculate_quality_scores.py)
+            try:
+                 avg_vote = float(m.get("avg_vote")) if m.get("avg_vote") is not None else GLOBAL_MEAN
+                 votes = int(m.get("votes")) if m.get("votes") is not None else 0
+            except (ValueError, TypeError):
+                 avg_vote = GLOBAL_MEAN
+                 votes = 0
+            
+            # Formula Bayesiana
+            if votes > 0:
+                score = (votes / (votes + MIN_VOTES)) * avg_vote + (MIN_VOTES / (votes + MIN_VOTES)) * GLOBAL_MEAN
+            else:
+                score = GLOBAL_MEAN
+            
+            score_norm = score / 10.0
+            
+            updates.append(
+                UpdateOne(
+                    {"imdb_id": m.get("imdb_id")},
+                    {"$set": {"quality_score": score_norm}}
+                )
+            )
+        
+        if updates:
+            coll_catalog.bulk_write(updates)
+            print(f"      ✅ Aggiornati {len(updates)} quality_score nel catalogo")
     
     # 5. Update FAISS index
     new_mapping = [{"imdb_id": doc["imdb_id"], "title": doc["title"]} for doc in new_docs]
